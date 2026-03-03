@@ -1,339 +1,251 @@
 import os
-import logging
-import random
+import sqlite3
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from collections import deque
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ConversationHandler,
-    ContextTypes,
+# ================== CONFIG ==================
+
+API_TOKEN = os.getenv("BOT_TOKEN")
+
+if not API_TOKEN:
+    raise ValueError("BOT_TOKEN not set in environment variables")
+
+DB_PATH = "/data/texas_global_ai.db"
+
+# تأكد من وجود مجلد data
+os.makedirs("/data", exist_ok=True)
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cursor = conn.cursor()
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+# ================== DATABASE ==================
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users(
+    user_id INTEGER PRIMARY KEY,
+    subscription_until TEXT,
+    trained_rounds INTEGER DEFAULT 0,
+    last_hand TEXT
 )
+""")
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS codes(
+    code TEXT PRIMARY KEY,
+    is_used INTEGER DEFAULT 0,
+    used_by INTEGER,
+    created_at TEXT
 )
-logger = logging.getLogger(__name__)
+""")
 
-TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN غير موجود!")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS games(
+    rank TEXT,
+    suit TEXT,
+    previous_hand TEXT,
+    current_hand TEXT,
+    created_at TEXT
+)
+""")
 
-ACTIVATION_CODE = "SECRET123"  # غيّره
+conn.commit()
 
-SA_TZ = ZoneInfo("Asia/Riyadh")
+# ================== HELPERS ==================
 
-# حالات المحادثة (أرقام مباشرة)
-ASK_RANK, ASK_SUIT, ASK_LAST_HIT, ASK_ACTUAL_HIT = range(4)
+def check_subscription(user_id):
+    cursor.execute("SELECT subscription_until FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return False
+    return datetime.fromisoformat(row[0]) > datetime.now()
 
-RANK_OPTIONS = [
-    ["2", "3", "4", "5"],
-    ["6", "7", "8", "9"],
-    ["10", "J", "Q", "K", "A"],
-    ["↩️ إلغاء"]
-]
+def activate_code(user_id, code):
+    cursor.execute("SELECT is_used FROM codes WHERE code=?", (code,))
+    row = cursor.fetchone()
 
-SUIT_EMOJIS = ["♥️", "♦️", "♣️", "♠️", "↩️ رجوع"]
+    if not row:
+        return False, "❌ الكود غير صحيح"
 
-HIT_OPTIONS = [
-    ["أربعة من نوع واحد", "زوجين"],
-    ["فل هاوس", "متتالية"],
-    ["ثلاثة"],
-    ["↩️ إلغاء"]
-]
+    if row[0] == 1:
+        return False, "❌ الكود مستخدم سابقاً"
 
-# ────────────────────────────────────────────────
-# التحديث الدوري (معرّفة هنا قبل main)
-# ────────────────────────────────────────────────
+    expire_date = datetime.now() + timedelta(days=7)
 
-async def send_update(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(SA_TZ).strftime("%H:%M")
-    msg = f"تحديث {now} – أوقات مقترحة (مثال):\n" + "\n".join([f"• {i:02d}:{(j*4)%60:02d}" for i,j in enumerate(range(5),1)])
+    cursor.execute("""
+    INSERT OR REPLACE INTO users(user_id, subscription_until, trained_rounds, last_hand)
+    VALUES(?, ?, 0, NULL)
+    """, (user_id, expire_date.isoformat()))
 
-    activated = context.application.bot_data.get("activated", {})
-    for uid, ch in activated.items():
-        if ch == "ربح متزايد":
-            try:
-                await context.bot.send_message(uid, msg)
-            except Exception:
-                pass
+    cursor.execute("UPDATE codes SET is_used=1, used_by=? WHERE code=?", (user_id, code))
+    conn.commit()
 
-# ────────────────────────────────────────────────
-# دوال مساعدة
-# ────────────────────────────────────────────────
+    return True, "✅ تم تفعيل الاشتراك لمدة 7 أيام"
 
-def is_activated(context, user_id: int) -> bool:
-    return user_id in context.application.bot_data.get("activated", {})
+def predict_hand(rank, suit, previous_hand):
+    scores = {}
 
-def activate_user(context, user_id: int, choice: str):
-    activated = context.application.bot_data.setdefault("activated", {})
-    activated[user_id] = choice
+    # تأثير الرقم + النوع
+    cursor.execute("""
+    SELECT current_hand FROM games
+    WHERE rank=? AND suit=?
+    """, (rank, suit))
+    for row in cursor.fetchall():
+        scores[row[0]] = scores.get(row[0], 0) + 1
 
-def get_smart_prediction(last_hit: str, history: deque) -> list:
-    if not history:
-        return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
+    # تأثير الضربة السابقة (وزن أعلى)
+    if previous_hand:
+        cursor.execute("""
+        SELECT current_hand FROM games
+        WHERE previous_hand=?
+        """, (previous_hand,))
+        for row in cursor.fetchall():
+            scores[row[0]] = scores.get(row[0], 0) + 2
 
-    recent_hits = [h for h, _ in list(history)[-6:]]
-    count = {}
-    for h in recent_hits:
-        count[h] = count.get(h, 0) + 1
+    if not scores:
+        return "👥 زوجين"
 
-    most_common = max(count, key=count.get) if count else "زوجين"
+    return max(scores, key=scores.get)
 
-    if "أربعة" in last_hit or "فل هاوس" in last_hit:
-        return ["زوج", "زوجين", "ثلاثة", "احتمال crash عالي"]
+def save_game(rank, suit, previous_hand, current_hand):
+    cursor.execute("""
+    INSERT INTO games(rank, suit, previous_hand, current_hand, created_at)
+    VALUES(?,?,?,?,?)
+    """, (rank, suit, previous_hand, current_hand, datetime.now().isoformat()))
+    conn.commit()
 
-    if most_common == "ثلاثة":
-        return ["زوجين", "فل هاوس", "أربعة من نوع واحد", "متتالية"]
-    if most_common == "زوجين":
-        return ["ثلاثة", "فل هاوس", "أربعة من نوع واحد", "متتالية"]
-    if most_common == "فل هاوس":
-        return ["أربعة من نوع واحد", "ثلاثة", "زوجين", "احتمال crash"]
+# ================== KEYBOARDS ==================
 
-    return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
+def ranks_keyboard():
+    kb = InlineKeyboardMarkup(row_width=4)
+    ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
+    buttons = [InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in ranks]
+    kb.add(*buttons)
+    return kb
 
-async def start_new_round(update_or_query, context, edit=True):
-    keyboard = []
-    for row in RANK_OPTIONS:
-        keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
+def suits_keyboard():
+    kb = InlineKeyboardMarkup(row_width=4)
+    suits = ["♥️","♦️","♣️","♠️"]
+    buttons = [InlineKeyboardButton(s, callback_data=f"suit_{s}") for s in suits]
+    kb.add(*buttons)
+    return kb
 
-    text = "جولة جديدة بدأت!\nأولاً: اختر رقم آخر ورقة مكشوفة"
+def hands_keyboard():
+    kb = InlineKeyboardMarkup(row_width=2)
+    hands = [
+        "👥 زوجين",
+        "🔗 متتالية",
+        "🎴 ثلاثة",
+        "🏠 فل هاوس",
+        "🂡 أربعة"
+    ]
+    buttons = [InlineKeyboardButton(h, callback_data=f"hand_{h}") for h in hands]
+    kb.add(*buttons)
+    return kb
 
-    if edit and hasattr(update_or_query, "edit_message_text"):
-        await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+# ================== TEMP STORAGE ==================
+
+user_temp = {}
+
+# ================== BOT FLOW ==================
+
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🔐 إدخال الكود", callback_data="enter_code"))
+
+    await message.answer(
+        "اهلاً بك في بوت تخمين ضربات تكساس ♠️🔥\n\n"
+        "ادخل الكود حتى تبدأ الاشتراك الأسبوعي.",
+        reply_markup=kb
+    )
+
+@dp.callback_query_handler(lambda c: c.data == "enter_code")
+async def enter_code(callback: types.CallbackQuery):
+    await callback.message.answer("🔐 ارسل الكود الآن:")
+    await bot.answer_callback_query(callback.id)
+
+@dp.message_handler()
+async def handle_text(message: types.Message):
+    user_id = message.from_user.id
+    text = message.text.strip()
+
+    if not check_subscription(user_id):
+        ok, msg = activate_code(user_id, text)
+        await message.answer(msg)
+        return
+
+    await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+
+@dp.callback_query_handler(lambda c: c.data.startswith("rank_"))
+async def choose_rank(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_temp[user_id] = {}
+    user_temp[user_id]["rank"] = callback.data.split("_")[1]
+    await callback.message.answer("اختر نوع الورقة:", reply_markup=suits_keyboard())
+    await bot.answer_callback_query(callback.id)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("suit_"))
+async def choose_suit(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    user_temp[user_id]["suit"] = callback.data.split("_")[1]
+
+    cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
+    trained, last_hand = cursor.fetchone()
+
+    if trained < 3:
+        await callback.message.answer(
+            f"⚠️ جولة تدريب رقم {trained+1} من 3\n\nشنو كانت ضربتك؟",
+            reply_markup=hands_keyboard()
+        )
     else:
-        if hasattr(update_or_query, "message"):
-            await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await update_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    return ASK_RANK
-
-# ────────────────────────────────────────────────
-# Handlers
-# ────────────────────────────────────────────────
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = [["ربح متزايد"], ["بس أربعة"], ["بس دبل AA"], ["دبل AA وأربعة"]]
-    await update.message.reply_text(
-        "مرحبا! 🚀\nاختر نوع الخدمة:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    )
-    return 0  # CHOOSING = 0
-
-
-async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    valid = ["ربح متزايد", "بس أربعة", "بس دبل AA", "دبل AA وأربعة"]
-
-    if text not in valid:
-        await update.message.reply_text("اختار من الأزرار")
-        return 0
-
-    context.user_data["choice"] = text
-
-    msg = f"اختيارك: *{text}*\n\n"
-    if text == "ربح متزايد":
-        msg += f"للتفعيل أرسل:\n`/activate {ACTIVATION_CODE}`"
-    else:
-        msg += "تواصل معي للدفع: @YourUsername"
-
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
-
-async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args or context.args[0] != ACTIVATION_CODE:
-        await update.message.reply_text(f"كود خاطئ → /activate {ACTIVATION_CODE}")
-        return
-
-    uid = update.effective_user.id
-    choice = context.user_data.get("choice")
-
-    if not choice:
-        await update.message.reply_text("اختار من /start أولاً")
-        return
-
-    if is_activated(context, uid):
-        await update.message.reply_text("مفعّل مسبقاً")
-        return
-
-    activate_user(context, uid, choice)
-
-    await update.message.reply_text(
-        f"تم التفعيل ✅\nنوع: {choice}\n\n"
-        "اضغط /predict لبدء التخمين"
-    )
-
-
-async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not is_activated(context, update.effective_user.id):
-        await update.message.reply_text("يجب التفعيل أولاً → /start ثم /activate")
-        return ConversationHandler.END
-
-    keyboard = []
-    for row in RANK_OPTIONS:
-        keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
-
-    await update.message.reply_text("جولة جديدة\nأولاً: اختر رقم آخر ورقة مكشوفة", reply_markup=InlineKeyboardMarkup(keyboard))
-    return ASK_RANK
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("rank_"):
-        rank = data[5:]
-        if rank == "↩️ إلغاء":
-            await query.edit_message_text("تم الإلغاء.")
-            return ConversationHandler.END
-
-        context.user_data["last_rank"] = rank
-
-        keyboard = [[InlineKeyboardButton(e, callback_data=f"suit_{e}")] for e in SUIT_EMOJIS]
-        await query.edit_message_text(
-            f"رقم الورقة: {rank}\n\nثانياً: اختر نوع الورقة",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        prediction = predict_hand(
+            user_temp[user_id]["rank"],
+            user_temp[user_id]["suit"],
+            last_hand
         )
-        return ASK_SUIT
+        user_temp[user_id]["prediction"] = prediction
 
-    elif data.startswith("suit_"):
-        suit = data[5:]
-        if suit == "↩️ رجوع":
-            keyboard = []
-            for row in RANK_OPTIONS:
-                keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
-            await query.edit_message_text("اختر رقم الورقة:", reply_markup=InlineKeyboardMarkup(keyboard))
-            return ASK_RANK
+        await callback.message.answer(f"🤖 تخميني:\n\n{prediction}")
+        await callback.message.answer("شنو كانت ضربتك الحقيقية؟", reply_markup=hands_keyboard())
 
-        context.user_data["last_suit"] = suit
+    await bot.answer_callback_query(callback.id)
 
-        keyboard = []
-        for row in HIT_OPTIONS:
-            keyboard.append([InlineKeyboardButton(txt, callback_data=f"hit_{txt}") for txt in row])
+@dp.callback_query_handler(lambda c: c.data.startswith("hand_"))
+async def choose_hand(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    current_hand = callback.data.replace("hand_","")
 
-        await query.edit_message_text(
-            f"رقم: {context.user_data['last_rank']}\n"
-            f"نوع: {suit}\n\n"
-            "ثالثاً: اختر آخر ضربة حصلت",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return ASK_LAST_HIT
+    cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
+    trained, previous_hand = cursor.fetchone()
 
-    elif data.startswith("hit_"):
-        hit = data[4:]
-        if hit == "↩️ إلغاء":
-            await query.edit_message_text("تم الإلغاء.")
-            return ConversationHandler.END
-
-        context.user_data["last_hit"] = hit
-
-        await do_smart_prediction(query, context)
-
-        keyboard = []
-        for row in HIT_OPTIONS:
-            keyboard.append([InlineKeyboardButton(txt, callback_data=f"actual_{txt}") for txt in row])
-
-        await query.message.reply_text(
-            "التخمين تم!\n\nالآن: شنو الضربة اللي ضربت فعلياً؟",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return ASK_ACTUAL_HIT
-
-    elif data.startswith("actual_"):
-        actual = data[7:]
-        uid = query.from_user.id
-        history = context.application.bot_data.setdefault("smart_history", {}).setdefault(uid, deque(maxlen=20))
-
-        if actual != "↩️ إلغاء":
-            history.append((
-                context.user_data.get("last_hit", "غير معروف"),
-                context.user_data.get("last_rank", "?"),
-                context.user_data.get("last_suit", "?"),
-                actual
-            ))
-            await query.message.reply_text(f"تم حفظ: الضربة الفعلية = {actual}")
-        else:
-            await query.message.reply_text("تم التخطي بدون حفظ")
-
-        # بدء جولة جديدة تلقائياً
-        await start_new_round(query, context, edit=False)
-        return ASK_RANK
-
-    return ConversationHandler.END
-
-
-async def do_smart_prediction(query, context):
-    last_hit = context.user_data.get("last_hit", "غير معروف")
-    last_suit = context.user_data.get("last_suit", "?")
-    last_rank = context.user_data.get("last_rank", "?")
-
-    uid = query.from_user.id
-    history = context.application.bot_data.setdefault("smart_history", {}).get(uid, deque())
-
-    predictions = get_smart_prediction(last_hit, history)
-    random.shuffle(predictions)
-    top_preds = predictions[:4]
-
-    lines = ["التخمين للضربة الجاية:\n"]
-    for i, pred in enumerate(top_preds, 1):
-        if "crash" in pred.lower():
-            lines.append(f"⚠️ {pred}")
-        elif i == 1:
-            lines.append(f"الأكثر احتمالاً: {pred}")
-        elif i == 2:
-            lines.append(f"احتمال جيد: {pred}")
-        else:
-            lines.append(f"احتمال متوسط: {pred}")
-
-    lines.append(f"\nبناءً على:")
-    lines.append(f"• رقم الورقة: {last_rank}")
-    lines.append(f"• نوع الورقة: {last_suit}")
-    lines.append(f"• آخر ضربة: {last_hit}")
-
-    await query.edit_message_text("\n".join(lines))
-
-
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    conv_choice = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]
-        },
-        fallbacks=[],
+    save_game(
+        user_temp[user_id]["rank"],
+        user_temp[user_id]["suit"],
+        previous_hand,
+        current_hand
     )
 
-    conv_predict = ConversationHandler(
-        entry_points=[CommandHandler("predict", cmd_predict)],
-        states={
-            ASK_RANK: [CallbackQueryHandler(button_handler)],
-            ASK_SUIT: [CallbackQueryHandler(button_handler)],
-            ASK_LAST_HIT: [CallbackQueryHandler(button_handler)],
-            ASK_ACTUAL_HIT: [CallbackQueryHandler(button_handler)],
-        },
-        fallbacks=[],
-    )
+    trained += 1
 
-    app.add_handler(conv_choice)
-    app.add_handler(conv_predict)
-    app.add_handler(CommandHandler("activate", activate))
+    cursor.execute("""
+    UPDATE users
+    SET trained_rounds=?, last_hand=?
+    WHERE user_id=?
+    """, (trained, current_hand, user_id))
 
-    # الدالة معرّفة فوق، فهي شغالة
-    app.job_queue.run_repeating(send_update, interval=600, first=30)
+    conn.commit()
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    await callback.message.answer("✅ تم حفظ الجولة.\n\nاختر رقم الورقة الجديدة:")
+    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
+    await bot.answer_callback_query(callback.id)
+
+# ================== RUN ==================
 
 if __name__ == "__main__":
-    main()
+    executor.start_polling(dp, skip_updates=True)
