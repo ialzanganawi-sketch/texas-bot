@@ -22,43 +22,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ────────────────────────────────────────────────
-# إعدادات أساسية
-# ────────────────────────────────────────────────
-
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("TOKEN غير موجود في Environment Variables")
+    raise ValueError("TOKEN غير موجود!")
 
-ACTIVATION_CODE = "SECRET123"  # ← غيّره إلى كود قوي
+ACTIVATION_CODE = "SECRET123"  # غيّره
 
 SA_TZ = ZoneInfo("Asia/Riyadh")
 
 # حالات المحادثة
-CHOOSING, PREDICT_HAND, PREDICT_SUIT, PREDICT_RANK, ASK_ACTUAL_HIT = range(5)
-
-# الخانة القوية منفصلة في الأعلى
-STRONG_HAND = "أربعة أو أقوى"
-
-HAND_OPTIONS_NORMAL = [
-    ["زوج", "زوجين", "دبل AA"],
-    ["ثلاثة", "ثلاثية"],
-    ["فل هاوس", "متتالية", "متتالية نوع واحد"],
-    ["↩️ إلغاء"]
-]
-
-SUIT_EMOJIS = ["♥️", "♦️", "♣️", "♠️", "↩️ رجوع"]
+ASK_RANK, ASK_SUIT, ASK_LAST_HIT, ASK_ACTUAL_HIT = range(4)
 
 RANK_OPTIONS = [
     ["2", "3", "4", "5"],
     ["6", "7", "8", "9"],
     ["10", "J", "Q", "K", "A"],
-    ["↩️ رجوع"]
+    ["↩️ إلغاء"]
 ]
 
-# ────────────────────────────────────────────────
-# دوال مساعدة
-# ────────────────────────────────────────────────
+SUIT_EMOJIS = ["♥️", "♦️", "♣️", "♠️", "↩️ رجوع"]
+
+HIT_OPTIONS = [
+    ["أربعة من نوع واحد", "زوجين"],
+    ["فل هاوس", "متتالية"],
+    ["ثلاثة"],
+    ["↩️ إلغاء"]
+]
 
 def is_activated(context, user_id: int) -> bool:
     return user_id in context.application.bot_data.get("activated", {})
@@ -67,61 +56,51 @@ def activate_user(context, user_id: int, choice: str):
     activated = context.application.bot_data.setdefault("activated", {})
     activated[user_id] = choice
 
-def generate_name_predictions(last_hand: str) -> list:
-    last_lower = last_hand.lower()
+def get_smart_prediction(last_hit: str, history: deque) -> list:
+    if not history:
+        return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
-    # بعد "أربعة أو أقوى" → توقع محافظ + تحذير
-    if "أربع" in last_lower or "أقوى" in last_lower:
-        return [
-            "زوج",
-            "زوجين",
-            "ثلاثة",
-            "احتمال crash عالي بعد هالضربة"
-        ]
+    recent_hits = [h for h, _ in list(history)[-6:]]  # آخر 6 جولات
 
-    # حالات عادية
-    if "فل هاوس" in last_lower:
-        return ["أربعة أو أقوى", "ثلاثية", "زوجين", "متتالية نوع واحد"]
+    count = {}
+    for h in recent_hits:
+        count[h] = count.get(h, 0) + 1
 
-    if "ثلاث" in last_lower:
-        return ["زوجين", "فل هاوس", "أربعة أو أقوى", "متتالية"]
+    most_common = max(count, key=count.get) if count else "زوجين"
 
-    if "زوج" in last_lower or "دبل" in last_lower:
-        return ["ثلاثة", "زوجين", "فل هاوس", "أربعة أو أقوى"]
+    if "أربعة" in last_hit or "فل هاوس" in last_hit:
+        return ["زوج", "زوجين", "ثلاثة", "احتمال crash عالي"]
 
-    if "متتالية" in last_lower:
-        return ["متتالية نوع واحد", "فل هاوس", "ثلاثية", "أربعة أو أقوى"]
+    if most_common == "ثلاثة":
+        return ["زوجين", "فل هاوس", "أربعة من نوع واحد", "متتالية"]
+    if most_common == "زوجين":
+        return ["ثلاثة", "فل هاوس", "أربعة من نوع واحد", "متتالية"]
+    if most_common == "فل هاوس":
+        return ["أربعة من نوع واحد", "ثلاثة", "زوجين", "احتمال crash"]
 
-    # افتراضي
-    return ["زوجين", "ثلاثة", "فل هاوس", "أربعة أو أقوى"]
+    return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
-# ────────────────────────────────────────────────
-# التحديث الدوري
-# ────────────────────────────────────────────────
+async def start_new_round(query_or_update, context):
+    """يبدأ جولة جديدة أوتوماتيكياً"""
+    keyboard = []
+    for row in RANK_OPTIONS:
+        keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
 
-async def send_update(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(SA_TZ).strftime("%H:%M")
-    msg = f"تحديث {now} – أوقات مقترحة (مثال):\n" + "\n".join([f"• {i:02d}:{(j*4)%60:02d}" for i,j in enumerate(range(5),1)])
+    text = "جولة جديدة بدأت!\nأولاً: اختر رقم آخر ورقة مكشوفة"
 
-    activated = context.application.bot_data.get("activated", {})
-    for uid, ch in activated.items():
-        if ch == "ربح متزايد":
-            try:
-                await context.bot.send_message(uid, msg)
-            except Exception:
-                pass
+    if hasattr(query_or_update, "edit_message_text"):
+        await query_or_update.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await query_or_update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return ASK_RANK
 
 # ────────────────────────────────────────────────
 # Handlers
 # ────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = [
-        ["ربح متزايد"],
-        ["بس أربعة"],
-        ["بس دبل AA"],
-        ["دبل AA وأربعة"],
-    ]
+    keyboard = [["ربح متزايد"], ["بس أربعة"], ["بس دبل AA"], ["دبل AA وأربعة"]]
     await update.message.reply_text(
         "مرحبا! 🚀\nاختر نوع الخدمة:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -169,7 +148,7 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         f"تم التفعيل ✅\nنوع: {choice}\n\n"
-        "/predict ← للتنبؤ\nx2.7 ← لحفظ نتيجة (اختياري)"
+        "اضغط /predict لبدء التخمين"
     )
 
 
@@ -179,19 +158,11 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     keyboard = []
+    for row in RANK_OPTIONS:
+        keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
 
-    # الخانة القوية منفصلة في الأعلى
-    keyboard.append([InlineKeyboardButton(STRONG_HAND, callback_data=f"hand_{STRONG_HAND}")])
-
-    # باقي الخانات العادية
-    for row in HAND_OPTIONS_NORMAL:
-        keyboard.append([InlineKeyboardButton(txt, callback_data=f"hand_{txt}") for txt in row])
-
-    await update.message.reply_text(
-        "اختر آخر ضربة حصلت:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return PREDICT_HAND
+    await update.message.reply_text("جولة جديدة\nأولاً: اختر رقم آخر ورقة مكشوفة", reply_markup=InlineKeyboardMarkup(keyboard))
+    return ASK_RANK
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -199,105 +170,102 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     data = query.data
 
-    if data.startswith("hand_"):
-        hand = data[5:]
-        if hand == "↩️ إلغاء":
+    if data.startswith("rank_"):
+        rank = data[5:]
+        if rank == "↩️ إلغاء":
             await query.edit_message_text("تم الإلغاء.")
             return ConversationHandler.END
 
-        context.user_data["last_hand"] = hand
+        context.user_data["last_rank"] = rank
 
         keyboard = [[InlineKeyboardButton(e, callback_data=f"suit_{e}")] for e in SUIT_EMOJIS]
         await query.edit_message_text(
-            f"آخر ضربة: {hand}\n\nاختر نوع آخر ورقة:",
+            f"رقم الورقة: {rank}\n\nثانياً: اختر نوع الورقة",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return PREDICT_SUIT
+        return ASK_SUIT
 
     elif data.startswith("suit_"):
         suit = data[5:]
         if suit == "↩️ رجوع":
             keyboard = []
-            # الخانة القوية منفصلة عند الرجوع أيضاً
-            keyboard.append([InlineKeyboardButton(STRONG_HAND, callback_data=f"hand_{STRONG_HAND}")])
-            for row in HAND_OPTIONS_NORMAL:
-                keyboard.append([InlineKeyboardButton(txt, callback_data=f"hand_{txt}") for txt in row])
-            await query.edit_message_text("اختر آخر ضربة:", reply_markup=InlineKeyboardMarkup(keyboard))
-            return PREDICT_HAND
+            for row in RANK_OPTIONS:
+                keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
+            await query.edit_message_text("اختر رقم الورقة:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return ASK_RANK
 
         context.user_data["last_suit"] = suit
 
         keyboard = []
-        for row in RANK_OPTIONS:
-            keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
+        for row in HIT_OPTIONS:
+            keyboard.append([InlineKeyboardButton(txt, callback_data=f"hit_{txt}") for txt in row])
 
         await query.edit_message_text(
-            f"آخر ضربة: {context.user_data['last_hand']}\n"
-            f"نوع الورقة: {suit}\n\n"
-            "اختر قيمة الورقة:",
+            f"رقم: {context.user_data['last_rank']}\n"
+            f"نوع: {suit}\n\n"
+            "ثالثاً: اختر آخر ضربة حصلت",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return PREDICT_RANK
+        return ASK_LAST_HIT
 
-    elif data.startswith("rank_"):
-        rank = data[5:]
-        if rank == "↩️ رجوع":
-            keyboard = [[InlineKeyboardButton(e, callback_data=f"suit_{e}")] for e in SUIT_EMOJIS]
-            await query.edit_message_text("اختر نوع الورقة:", reply_markup=InlineKeyboardMarkup(keyboard))
-            return PREDICT_SUIT
-
-        context.user_data["last_rank"] = rank
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("أرسل الضربة الفعلية", callback_data="send_hit")],
-            [InlineKeyboardButton("تخطي ← تنبؤ مباشر", callback_data="skip_hit")]
-        ])
-
-        await query.edit_message_text(
-            f"تم اختيار:\n"
-            f"• الضربة السابقة: {context.user_data['last_hand']}\n"
-            f"• الورقة: {rank} {context.user_data['last_suit']}\n\n"
-            "شنو الضربة اللي ضربت فعلياً هالمرة؟\n(اختياري – لتحسين التوقعات المستقبلية)",
-            reply_markup=keyboard
-        )
-        return ASK_ACTUAL_HIT
-
-    elif data in ("send_hit", "skip_hit"):
-        if data == "skip_hit":
-            await do_final_prediction(query, context)
+    elif data.startswith("hit_"):
+        hit = data[4:]
+        if hit == "↩️ إلغاء":
+            await query.edit_message_text("تم الإلغاء.")
             return ConversationHandler.END
 
-        await query.edit_message_text(
-            "أرسل اسم الضربة اللي ضربت فعلياً\n"
-            "(مثال: زوجين، ثلاثية، فل هاوس، أربعة أو أقوى...)\n\n"
-            "أو أرسل /skip لو ما تبي تسجل"
+        context.user_data["last_hit"] = hit
+
+        await do_smart_prediction(query, context)
+
+        # بعد التخمين مباشرة يسأل عن الضربة الفعلية
+        keyboard = []
+        for row in HIT_OPTIONS:
+            keyboard.append([InlineKeyboardButton(txt, callback_data=f"actual_{txt}") for txt in row])
+
+        await query.message.reply_text(
+            "التخمين تم!\n\nالآن: شنو الضربة اللي ضربت فعلياً؟",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ASK_ACTUAL_HIT
 
+    elif data.startswith("actual_"):
+        actual = data[7:]
+        uid = query.from_user.id
+        history = context.application.bot_data.setdefault("smart_history", {}).setdefault(uid, deque(maxlen=20))
 
-async def handle_actual_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip().lower()
+        if actual != "↩️ إلغاء":
+            # حفظ الجولة الكاملة: (الضربة المتوقعة السابقة, الرقم, النوع, الضربة الفعلية)
+            history.append((
+                context.user_data.get("last_hit", "غير معروف"),
+                context.user_data.get("last_rank", "?"),
+                context.user_data.get("last_suit", "?"),
+                actual
+            ))
+            await query.message.reply_text(f"تم حفظ: الضربة الفعلية = {actual}")
+        else:
+            await query.message.reply_text("تم التخطي بدون حفظ")
 
-    if text in ["/skip", "skip", "تخطي"]:
-        await update.message.reply_text("تم التخطي.")
-    else:
-        context.user_data["last_hand"] = text
-        await update.message.reply_text(f"تم تسجيل الضربة الفعلية: {text}")
+        # بدء جولة جديدة أوتوماتيكياً
+        await start_new_round(query, context)
+        return ASK_RANK
 
-    await do_final_prediction(update, context)
     return ConversationHandler.END
 
 
-async def do_final_prediction(update_or_query, context):
-    last_hand = context.user_data.get("last_hand", "غير معروف")
+async def do_smart_prediction(query, context):
+    last_hit = context.user_data.get("last_hit", "غير معروف")
     last_suit = context.user_data.get("last_suit", "?")
     last_rank = context.user_data.get("last_rank", "?")
 
-    predictions = generate_name_predictions(last_hand)
+    uid = query.from_user.id
+    history = context.application.bot_data.setdefault("smart_history", {}).get(uid, deque())
+
+    predictions = get_smart_prediction(last_hit, history)
     random.shuffle(predictions)
     top_preds = predictions[:4]
 
-    lines = ["التوقعات للضربة القادمة:\n"]
+    lines = ["التخمين للضربة الجاية:\n"]
     for i, pred in enumerate(top_preds, 1):
         if "crash" in pred.lower():
             lines.append(f"⚠️ {pred}")
@@ -309,32 +277,11 @@ async def do_final_prediction(update_or_query, context):
             lines.append(f"احتمال متوسط: {pred}")
 
     lines.append(f"\nبناءً على:")
-    lines.append(f"• آخر ضربة: {last_hand}")
-    if last_rank != "?" and last_suit != "?":
-        lines.append(f"• آخر ورقة: {last_rank} {last_suit}")
+    lines.append(f"• رقم الورقة: {last_rank}")
+    lines.append(f"• نوع الورقة: {last_suit}")
+    lines.append(f"• آخر ضربة: {last_hit}")
 
-    final_text = "\n".join(lines)
-
-    if hasattr(update_or_query, "edit_message_text"):
-        await update_or_query.edit_message_text(final_text)
-    else:
-        await update_or_query.message.reply_text(final_text)
-
-    context.user_data["pending_hand"] = last_hand
-
-
-async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text.strip().lower()
-    if not text.startswith("x"):
-        return
-
-    try:
-        _ = float(text[1:])
-    except ValueError:
-        await update.message.reply_text("الصيغة خاطئة → مثال: x2.8")
-        return
-
-    await update.message.reply_text("تم حفظ النتيجة ✓ شكراً")
+    await query.edit_message_text("\n".join(lines))
 
 
 def main():
@@ -349,20 +296,16 @@ def main():
     conv_predict = ConversationHandler(
         entry_points=[CommandHandler("predict", cmd_predict)],
         states={
-            PREDICT_HAND: [CallbackQueryHandler(button_handler)],
-            PREDICT_SUIT: [CallbackQueryHandler(button_handler)],
-            PREDICT_RANK: [CallbackQueryHandler(button_handler)],
-            ASK_ACTUAL_HIT: [
-                CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_actual_hit)
-            ],
+            ASK_RANK: [CallbackQueryHandler(button_handler)],
+            ASK_SUIT: [CallbackQueryHandler(button_handler)],
+            ASK_LAST_HIT: [CallbackQueryHandler(button_handler)],
+            ASK_ACTUAL_HIT: [CallbackQueryHandler(button_handler)],
         },
         fallbacks=[],
     )
 
     app.add_handler(conv_choice)
     app.add_handler(conv_predict)
-    app.add_handler(MessageHandler(filters.Regex(r'^x[\d.]+$'), save_result))
     app.add_handler(CommandHandler("activate", activate))
 
     app.job_queue.run_repeating(send_update, interval=600, first=30)
