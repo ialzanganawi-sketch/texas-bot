@@ -2,6 +2,8 @@ import os
 import sqlite3
 import asyncio
 import logging
+import random
+import string
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
@@ -17,14 +19,13 @@ if not API_TOKEN:
 
 DB_PATH = "/data/texas_global_ai.db"
 
-# تأكد من وجود مجلد data
 os.makedirs("/data", exist_ok=True)
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()  # ما نمرر bot هنا في aiogram 3
+dp = Dispatcher()
 
 # ================== DATABASE ==================
 
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS codes(
     code TEXT PRIMARY KEY,
     is_used INTEGER DEFAULT 0,
     used_by INTEGER,
-    created_at TEXT
+    created_at TEXT,
+    expires_at TEXT
 )
 """)
 
@@ -58,6 +60,41 @@ CREATE TABLE IF NOT EXISTS games(
 
 conn.commit()
 
+# ================== CODE GENERATION ==================
+
+def generate_code(length=10):
+    characters = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def create_subscription_code(duration_days=7):
+    """
+    duration_days:
+      7   → اشتراك أسبوعي
+      0   → تجربة ساعة واحدة
+    """
+    code = generate_code()
+    
+    while True:
+        cursor.execute("SELECT code FROM codes WHERE code=?", (code,))
+        if not cursor.fetchone():
+            break
+        code = generate_code()
+    
+    created_at = datetime.now().isoformat()
+    
+    if duration_days == 0:
+        expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
+    else:
+        expires_at = (datetime.now() + timedelta(days=duration_days)).isoformat()
+    
+    cursor.execute("""
+    INSERT INTO codes (code, is_used, created_at, expires_at)
+    VALUES (?, 0, ?, ?)
+    """, (code, created_at, expires_at))
+    
+    conn.commit()
+    return code, expires_at
+
 # ================== HELPERS ==================
 
 def check_subscription(user_id: int) -> bool:
@@ -65,18 +102,35 @@ def check_subscription(user_id: int) -> bool:
     row = cursor.fetchone()
     if not row or not row[0]:
         return False
-    return datetime.fromisoformat(row[0]) > datetime.now()
+    try:
+        return datetime.fromisoformat(row[0]) > datetime.now()
+    except:
+        return False
 
 def activate_code(user_id: int, code: str) -> tuple[bool, str]:
-    cursor.execute("SELECT is_used FROM codes WHERE code=?", (code,))
+    cursor.execute("""
+    SELECT is_used, expires_at 
+    FROM codes 
+    WHERE code=?
+    """, (code,))
     row = cursor.fetchone()
 
     if not row:
-        return False, "❌ الكود غير صحيح"
+        return False, "❌ الكود غير موجود"
 
-    if row[0] == 1:
+    is_used, expires_at_str = row
+
+    if is_used == 1:
         return False, "❌ الكود مستخدم سابقاً"
 
+    try:
+        expires_at = datetime.fromisoformat(expires_at_str)
+        if expires_at < datetime.now():
+            return False, "❌ الكود منتهي الصلاحية"
+    except:
+        return False, "❌ خطأ في صلاحية الكود"
+
+    # تفعيل الاشتراك لمدة 7 أيام بعد الاستخدام
     expire_date = datetime.now() + timedelta(days=7)
 
     cursor.execute("""
@@ -87,12 +141,11 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
     cursor.execute("UPDATE codes SET is_used=1, used_by=? WHERE code=?", (user_id, code))
     conn.commit()
 
-    return True, "✅ تم تفعيل الاشتراك لمدة 7 أيام"
+    return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(كان الكود صالح حتى: {expires_at.strftime('%Y-%m-%d %H:%M')})"
 
 def predict_hand(rank: str, suit: str, previous_hand: str | None) -> str:
     scores = {}
 
-    # تأثير الرقم + النوع
     cursor.execute("""
     SELECT current_hand FROM games
     WHERE rank=? AND suit=?
@@ -100,7 +153,6 @@ def predict_hand(rank: str, suit: str, previous_hand: str | None) -> str:
     for row in cursor.fetchall():
         scores[row[0]] = scores.get(row[0], 0) + 1
 
-    # تأثير الضربة السابقة (وزن أعلى)
     if previous_hand:
         cursor.execute("""
         SELECT current_hand FROM games
@@ -171,7 +223,7 @@ async def start(message: Message):
 @dp.callback_query(lambda c: c.data == "enter_code")
 async def enter_code(callback: CallbackQuery):
     await callback.message.answer("🔐 ارسل الكود الآن:")
-    await callback.answer()  # بدل answer_callback_query
+    await callback.answer()
 
 @dp.message()
 async def handle_text(message: Message):
@@ -264,10 +316,41 @@ async def choose_hand(callback: CallbackQuery):
     await callback.message.answer("✅ تم حفظ الجولة.\n\nاختر رقم الورقة الجديدة:")
     await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-    # نظف البيانات المؤقتة بعد الاستخدام
     user_temp.pop(user_id, None)
-
     await callback.answer()
+
+# ================== ADMIN COMMANDS ==================
+
+ADMIN_ID = 7717061636   # ← غيّر هذا الرقم إلى user_id الخاص بك
+
+@dp.message(Command("genweek", "genshort"))
+async def admin_generate_codes(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("غير مصرح لك بهذا الأمر!")
+        return
+
+    command = message.text.split()[0].lstrip('/')
+    try:
+        count = int(message.text.split()[1])
+    except:
+        count = 1
+
+    count = min(count, 20)
+
+    if command == "genweek":
+        duration = 7
+        title = "كودات أسبوعية (7 أيام صلاحية قبل الاستخدام)"
+    else:
+        duration = 0
+        title = "كودات تجربة (ساعة واحدة صلاحية قبل الاستخدام)"
+
+    codes_list = []
+    for _ in range(count):
+        code, expires = create_subscription_code(duration)
+        codes_list.append(f"`{code}`  → تنتهي: {expires.split('.')[0]}")
+
+    text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
+    await message.answer(text, parse_mode="MarkdownV2")
 
 # ================== RUN ==================
 
