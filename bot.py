@@ -22,22 +22,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ────────────────────────────────────────────────
-# إعدادات أساسية
-# ────────────────────────────────────────────────
-
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("TOKEN غير موجود في Environment Variables")
+    raise ValueError("TOKEN غير موجود!")
 
-ACTIVATION_CODE = "SECRET123"  # غيّره إلى كود قوي
+ACTIVATION_CODE = "SECRET123"  # غيّره
 
 SA_TZ = ZoneInfo("Asia/Riyadh")
 
-# حالات المحادثة
+# حالات المحادثة (أرقام مباشرة)
 ASK_RANK, ASK_SUIT, ASK_LAST_HIT, ASK_ACTUAL_HIT = range(4)
 
-# خيارات الأرقام
 RANK_OPTIONS = [
     ["2", "3", "4", "5"],
     ["6", "7", "8", "9"],
@@ -47,13 +42,28 @@ RANK_OPTIONS = [
 
 SUIT_EMOJIS = ["♥️", "♦️", "♣️", "♠️", "↩️ رجوع"]
 
-# الضربات المحدودة فقط (اللي طلبتها)
 HIT_OPTIONS = [
     ["أربعة من نوع واحد", "زوجين"],
     ["فل هاوس", "متتالية"],
     ["ثلاثة"],
     ["↩️ إلغاء"]
 ]
+
+# ────────────────────────────────────────────────
+# التحديث الدوري (معرّفة هنا قبل main)
+# ────────────────────────────────────────────────
+
+async def send_update(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(SA_TZ).strftime("%H:%M")
+    msg = f"تحديث {now} – أوقات مقترحة (مثال):\n" + "\n".join([f"• {i:02d}:{(j*4)%60:02d}" for i,j in enumerate(range(5),1)])
+
+    activated = context.application.bot_data.get("activated", {})
+    for uid, ch in activated.items():
+        if ch == "ربح متزايد":
+            try:
+                await context.bot.send_message(uid, msg)
+            except Exception:
+                pass
 
 # ────────────────────────────────────────────────
 # دوال مساعدة
@@ -67,14 +77,10 @@ def activate_user(context, user_id: int, choice: str):
     activated[user_id] = choice
 
 def get_smart_prediction(last_hit: str, history: deque) -> list:
-    """
-    توقع ذكي يعتمد على التاريخ المحفوظ
-    """
     if not history:
         return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
-    recent_hits = [h for h, _ in list(history)[-6:]]  # آخر 6 جولات
-
+    recent_hits = [h for h, _ in list(history)[-6:]]
     count = {}
     for h in recent_hits:
         count[h] = count.get(h, 0) + 1
@@ -94,7 +100,6 @@ def get_smart_prediction(last_hit: str, history: deque) -> list:
     return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
 async def start_new_round(update_or_query, context, edit=True):
-    """يبدأ جولة جديدة تلقائياً"""
     keyboard = []
     for row in RANK_OPTIONS:
         keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
@@ -121,7 +126,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "مرحبا! 🚀\nاختر نوع الخدمة:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     )
-    return CHOOSING
+    return 0  # CHOOSING = 0
 
 
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -130,7 +135,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if text not in valid:
         await update.message.reply_text("اختار من الأزرار")
-        return CHOOSING
+        return 0
 
     context.user_data["choice"] = text
 
@@ -232,10 +237,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         context.user_data["last_hit"] = hit
 
-        # التخمين المباشر
         await do_smart_prediction(query, context)
 
-        # سؤال الضربة الفعلية أوتوماتيكياً
         keyboard = []
         for row in HIT_OPTIONS:
             keyboard.append([InlineKeyboardButton(txt, callback_data=f"actual_{txt}") for txt in row])
@@ -326,6 +329,7 @@ def main():
     app.add_handler(conv_predict)
     app.add_handler(CommandHandler("activate", activate))
 
+    # الدالة معرّفة فوق، فهي شغالة
     app.job_queue.run_repeating(send_update, interval=600, first=30)
 
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
