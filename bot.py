@@ -184,9 +184,9 @@ def hands_keyboard() -> InlineKeyboardMarkup:
 
 user_temp: dict[int, dict] = {}
 
-# ================== ADMIN COMMANDS (يجب أن تكون قبل الهاندلر العام) ==================
+# ================== ADMIN COMMANDS ==================
 
-ADMIN_ID = 7717061636  # تأكد من الرقم
+ADMIN_ID = 7717061636   # رقمك
 
 @dp.message(Command("genshort"))
 async def cmd_genshort(message: Message):
@@ -215,11 +215,11 @@ async def handle_admin_gen(message: Message, duration_days: int, title: str):
     for _ in range(count):
         code, expires = create_subscription_code(duration_days)
         expires_clean = expires.split('.')[0]
-        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
+        codes_list.append(f"<code>{code}</code> → تنتهي: {expires_clean}")
 
-    reply_text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
-    await message.answer(reply_text, parse_mode="MarkdownV2")
+    reply_text = f"<b>{title}</b> ({count} كود):\n\n" + "\n".join(codes_list)
 
+    await message.answer(reply_text, parse_mode="HTML")
 # ================== BOT FLOW ==================
 
 @dp.message(CommandStart())
