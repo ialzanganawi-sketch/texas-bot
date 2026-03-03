@@ -17,7 +17,7 @@ API_TOKEN = os.getenv("BOT_TOKEN")
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN not set in environment variables")
 
-ADMIN_ID = 7717061636   # ← غيّر هذا إلى رقمك الحقيقي من @userinfobot
+ADMIN_ID = 7717061636   # غيّر هذا إلى رقمك الحقيقي
 
 DB_PATH = "/data/texas_global_ai.db"
 
@@ -62,6 +62,33 @@ CREATE TABLE IF NOT EXISTS games(
 
 conn.commit()
 
+# ================== CODE GENERATION ==================
+
+def generate_code(length=10):
+    characters = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def create_subscription_code(duration_days=7):
+    code = generate_code()
+    while True:
+        cursor.execute("SELECT code FROM codes WHERE code=?", (code,))
+        if not cursor.fetchone():
+            break
+        code = generate_code()
+    
+    created_at = datetime.now().isoformat()
+    if duration_days == 0:
+        expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
+    else:
+        expires_at = (datetime.now() + timedelta(days=duration_days)).isoformat()
+    
+    cursor.execute("""
+    INSERT INTO codes (code, is_used, created_at, expires_at)
+    VALUES (?, 0, ?, ?)
+    """, (code, created_at, expires_at))
+    conn.commit()
+    return code, expires_at
+
 # ================== HELPERS ==================
 
 def check_subscription(user_id: int) -> bool:
@@ -103,7 +130,31 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
     cursor.execute("UPDATE codes SET is_used=1, used_by=? WHERE code=?", (user_id, code))
     conn.commit()
 
-    return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(كان الكود صالح حتى: {expires_at.strftime('%Y-%m-%d %H:%M')})"
+    remaining = (expire_date - datetime.now()).days + 1
+    return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(المدة المتبقية: {remaining} أيام)"
+
+# ================== KEYBOARDS ==================
+
+def ranks_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=4)
+    ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
+    buttons = [InlineKeyboardButton(text=r, callback_data=f"rank_{r}") for r in ranks]
+    kb.add(*buttons)
+    return kb
+
+def suits_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=4)
+    suits = ["♥️","♦️","♣️","♠️"]
+    buttons = [InlineKeyboardButton(text=s, callback_data=f"suit_{s}") for s in suits]
+    kb.add(*buttons)
+    return kb
+
+def hands_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardMarkup(row_width=2)
+    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
+    buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
+    kb.add(*buttons)
+    return kb
 
 # ================== ADMIN: إضافة كود يدوي ==================
 
@@ -115,7 +166,7 @@ async def add_custom_code(message: Message):
 
     parts = message.text.strip().split(maxsplit=2)
     if len(parts) < 2:
-        await message.answer("استخدام:\n/addcode الكود المدة\nمثال:\n/addcode MYCODE123 7\n/addcode TEST456 0")
+        await message.answer("استخدام:\n/addcode الكود المدة\nمثال: /addcode MYCODE123 7")
         return
 
     custom_code = parts[1]
@@ -126,7 +177,6 @@ async def add_custom_code(message: Message):
         except:
             days = 7
 
-    # تحقق إذا الكود موجود
     cursor.execute("SELECT code FROM codes WHERE code=?", (custom_code,))
     if cursor.fetchone():
         await message.answer("❌ هذا الكود موجود مسبقاً!")
@@ -144,7 +194,7 @@ async def add_custom_code(message: Message):
     """, (custom_code, created_at, expires_at))
     conn.commit()
 
-    await message.answer(f"✅ تم إضافة الكود بنجاح!\n\n`{custom_code}`\nمدة: {days} أيام\nينتهي: {expires_at.split('.')[0]}", parse_mode="MarkdownV2")
+    await message.answer(f"✅ تم إضافة الكود بنجاح!\n\n`{custom_code}`\nمدة: {days} أيام", parse_mode="MarkdownV2")
 
 # ================== BOT FLOW ==================
 
@@ -168,14 +218,21 @@ async def handle_text(message: Message):
         await message.answer(msg)
 
         if ok:
-            # هذا السطر مهم جداً: يبدأ التخمين فوراً بعد التفعيل
-            await message.answer("✅ اشتراكك مفعّل بنجاح!\n\nاختر رقم الورقة:", reply_markup=ranks_keyboard())
+            # زر بدء التخمين بعد التفعيل
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎮 بدء التخمين", callback_data="start_guessing")]])
+            await message.answer("اختر الآن:", reply_markup=kb)
         return
 
-    # إذا كان مشترك أصلاً
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# ================== CALLBACK HANDLERS ==================
+# ================== زر بدء التخمين ==================
+
+@dp.callback_query(lambda c: c.data == "start_guessing")
+async def start_guessing(callback: CallbackQuery):
+    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+    await callback.answer()
+
+# ================== باقي الـ Callbacks ==================
 
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
