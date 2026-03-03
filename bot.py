@@ -2,6 +2,8 @@ import os
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from collections import deque
+import random
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -27,7 +29,7 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN غير موجود في الـ Environment Variables")
 
-ACTIVATION_CODE = "SECRET123"           # غيّره لشي أقوى أو اجعله عشوائي لاحقاً
+ACTIVATION_CODE = "SECRET123"           # ← غيّره إلى كود أقوى في الإنتاج
 
 SA_TIMEZONE = ZoneInfo("Asia/Riyadh")
 
@@ -54,15 +56,18 @@ RESPONSES = {
         "المدة: أسبوع واحد\n\n"
         "→ للتفعيل أرسل:\n"
         f"`/activate {ACTIVATION_CODE}`\n\n"
-        "بعد التفعيل راح تبدأ تتلقى الأوقات كل 10 دقايق."
+        "بعد التفعيل راح تبدأ تتلقى الأوقات + ميزة التنبؤ"
     ),
     "بس أربعة": "اختيارك: **بس أربعة** – السعر 10,000 – مدة يوم\nتواصل وياي: t.me/اسمك",
     "بس دبل AA": "اختيارك: **بس دبل AA** – السعر 10,000 – مدة يومين\nتواصل وياي: t.me/اسمك",
     "دبل AA وأربعة": "اختيارك: **دبل AA وأربعة** – السعر 20,000 – مدة 3 أيام\nتواصل وياي: t.me/اسمك",
 }
 
+# حالات المحادثة
+CHOICE, PREDICT_INPUT = range(2)
+
 # ────────────────────────────────────────────────
-# حفظ الاختيارات والتفعيلات (في الذاكرة – يتمسح عند إعادة التشغيل)
+# دوال المساعدة
 # ────────────────────────────────────────────────
 
 def get_user_choice(context, user_id):
@@ -79,6 +84,24 @@ def activate_user(context, user_id, choice):
     activated = context.application.bot_data.setdefault("activated_users", {})
     activated[user_id] = choice
 
+# تنبؤ بسيط (يمكن تطويره لاحقاً)
+def simple_predict(last_hand_type: str, recent_mults: list) -> float:
+    if not recent_mults:
+        return round(random.uniform(1.6, 4.2), 2)
+
+    avg = sum(recent_mults) / len(recent_mults)
+
+    if last_hand_type in ["أربعة", "فل هاوس", "ستريت فلاش", "رويال"]:
+        return round(random.uniform(1.3, 2.4), 2)
+    
+    if len(recent_mults) >= 3 and all(m >= 3.0 for m in recent_mults[-3:]):
+        return round(random.uniform(1.4, 2.1), 2)
+    
+    if last_hand_type in ["زوج", "دبل", "ثلاثة", "دبل AA"]:
+        return round(random.uniform(avg * 0.9, avg * 1.4), 2)
+    
+    return round(random.uniform(1.8, 3.8), 2)
+
 # ────────────────────────────────────────────────
 # إرسال الأوقات (كل 10 دقايق)
 # ────────────────────────────────────────────────
@@ -90,7 +113,7 @@ async def send_times(context: ContextTypes.DEFAULT_TYPE) -> None:
     times = []
     base = now.replace(second=0, microsecond=0)
     for i in range(1, 11):
-        delta_min = i * 2 + 1          # 3,5,7,9,11,... أو غيّر النمط اللي تبيه
+        delta_min = i * 2 + 1
         t = base + timedelta(minutes=delta_min)
         times.append(t.strftime("%H:%M"))
 
@@ -117,7 +140,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     kb = ReplyKeyboardMarkup(OPTIONS, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(WELCOME_MSG, reply_markup=kb)
     await update.message.reply_text(QUESTION)
-    return 0  # CHOICE state
+    return CHOICE
 
 
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -125,7 +148,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if text not in RESPONSES:
         await update.message.reply_text("اختار من الأزرار أعلاه لو سمحت")
-        return 0
+        return CHOICE
 
     user_id = update.effective_user.id
     save_user_choice(context, user_id, text)
@@ -135,7 +158,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
-    return -1  # END
+    return ConversationHandler.END
 
 
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -159,30 +182,19 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     now_str = datetime.now(SA_TIMEZONE).strftime("%H:%M")
     await update.message.reply_text(
         f"تم التفعيل بنجاح! ✅\n"
-        f"نوع الضربة: {choice}\n"
-        f"الساعة الحالية: {now_str}\n"
-        "راح تبدأ تتلقى التحديثات كل 10 دقايق (أول واحد خلال دقايق)"
+        f"نوع الاشتراك: {choice}\n"
+        f"الساعة الحالية: {now_str}\n\n"
+        "الآن متاح لك:\n"
+        "• التحديثات كل 10 دقايق (إذا ربح متزايد)\n"
+        "• /predict    ← خمن الضربة القادمة\n"
+        "• أرسل مثل: x2.7   ← لحفظ النتيجة الفعلية وتحسين التنبؤ\n\n"
+        "جرب الحين: /predict"
     )
 
 
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={0: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]},
-        fallbacks=[],
-    )
-
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("activate", activate))
-
-    # جدولة كل 600 ثانية (10 دقايق)
-    app.job_queue.run_repeating(send_times, interval=600, first=30)
-
-    logger.info("البوت بدأ التشغيل")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
-
-if __name__ == "__main__":
-    main()
+async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    
+    if not is_activated(context, user_id):
+        await update.message.reply_text(
+            "⚠️ ميزة التنبؤ متاحة فقط للمش
