@@ -1,9 +1,2 @@
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
-  },
-  "deploy": {
-    "startCommand": "python bot.py"
-  }
-}
+[phases.setup]
+nixPkgs = ['python311']
