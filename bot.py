@@ -186,15 +186,15 @@ user_temp: dict[int, dict] = {}
 
 # ================== ADMIN COMMANDS ==================
 
-ADMIN_ID = 7717061636   # رقمك
+ADMIN_ID = 7717061636   # رقمك من @userinfobot
 
 @dp.message(Command("genshort"))
 async def cmd_genshort(message: Message):
-    await handle_admin_gen(message, duration_days=0, title="كودات ساعة واحدة")
+    await handle_admin_gen(message, 0, "كودات ساعة واحدة")
 
 @dp.message(Command("genweek"))
 async def cmd_genweek(message: Message):
-    await handle_admin_gen(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
+    await handle_admin_gen(message, 7, "كودات أسبوعية (7 أيام)")
 
 async def handle_admin_gen(message: Message, duration_days: int, title: str):
     if message.from_user.id != ADMIN_ID:
@@ -215,11 +215,11 @@ async def handle_admin_gen(message: Message, duration_days: int, title: str):
     for _ in range(count):
         code, expires = create_subscription_code(duration_days)
         expires_clean = expires.split('.')[0]
-        codes_list.append(f"<code>{code}</code> → تنتهي: {expires_clean}")
+        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
 
-    reply_text = f"<b>{title}</b> ({count} كود):\n\n" + "\n".join(codes_list)
+    text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
+    await message.answer(text, parse_mode="MarkdownV2")
 
-    await message.answer(reply_text, parse_mode="HTML")
 # ================== BOT FLOW ==================
 
 @dp.message(CommandStart())
@@ -239,24 +239,25 @@ async def enter_code(callback: CallbackQuery):
     await callback.message.answer("🔐 ارسل الكود الآن:")
     await callback.answer()
 
-# الهاندلر العام (يجب أن يأتي بعد الأوامر الإدارية)
 @dp.message()
 async def handle_text(message: Message):
-    # تجاهل إذا كان الأمر يبدأ بـ / (عشان ما يأخذ الأوامر الإدارية)
-    if message.text.strip().startswith('/'):
-        return
-
     user_id = message.from_user.id
     text = message.text.strip()
 
     if not check_subscription(user_id):
         ok, msg = activate_code(user_id, text)
         await message.answer(msg)
+
+        if ok:   # ← هذا السطر مهم جداً
+            await message.answer("✅ اشتراكك مفعّل الآن!\n\nاختر رقم الورقة:", 
+                               reply_markup=ranks_keyboard())
         return
 
+    # إذا كان مشترك أصلاً
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# باقي callback handlers
+# ================== CALLBACK HANDLERS ==================
+
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -285,11 +286,7 @@ async def choose_suit(callback: CallbackQuery):
             reply_markup=hands_keyboard()
         )
     else:
-        prediction = predict_hand(
-            user_temp[user_id]["rank"],
-            user_temp[user_id]["suit"],
-            last_hand
-        )
+        prediction = predict_hand(user_temp[user_id]["rank"], user_temp[user_id]["suit"], last_hand)
         user_temp[user_id]["prediction"] = prediction
         await callback.message.answer(f"🤖 تخميني:\n\n{prediction}")
         await callback.message.answer("شنو كانت ضربتك الحقيقية؟", reply_markup=hands_keyboard())
@@ -301,7 +298,7 @@ async def choose_hand(callback: CallbackQuery):
     user_id = callback.from_user.id
     current_hand = callback.data.replace("hand_", "")
 
-    if user_id not in user_temp or "rank" not in user_temp.get(user_id, {}) or "suit" not in user_temp.get(user_id, {}):
+    if user_id not in user_temp or "rank" not in user_temp[user_id] or "suit" not in user_temp[user_id]:
         await callback.message.answer("خطأ في التسلسل، جرب من جديد")
         await callback.answer()
         return
@@ -315,35 +312,14 @@ async def choose_hand(callback: CallbackQuery):
 
     trained, previous_hand = row
 
-    save_game(
-        user_temp[user_id]["rank"],
-        user_temp[user_id]["suit"],
-        previous_hand,
-        current_hand
-    )
+    save_game(user_temp[user_id]["rank"], user_temp[user_id]["suit"], previous_hand, current_hand)
 
     trained += 1
 
     cursor.execute("""
-    UPDATE users
-    SET trained_rounds=?, last_hand=?
-    WHERE user_id=?
+    UPDATE users SET trained_rounds=?, last_hand=? WHERE user_id=?
     """, (trained, current_hand, user_id))
     conn.commit()
 
     await callback.message.answer("✅ تم حفظ الجولة.\n\nاختر رقم الورقة الجديدة:")
-    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
-
-    user_temp.pop(user_id, None)
-    await callback.answer()
-
-# ================== RUN ==================
-
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Webhook deleted, starting polling")
-    await dp.start_polling(bot, skip_updates=True)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await callback.message.answer("اختر رقم الورق
