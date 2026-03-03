@@ -1,2 +1,1 @@
-python-telegram-bot==21.9
-# أو ==21.9 إذا واجهت مشاكل
+python-telegram-bot[all]==22.1
