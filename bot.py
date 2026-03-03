@@ -184,6 +184,42 @@ def hands_keyboard() -> InlineKeyboardMarkup:
 
 user_temp: dict[int, dict] = {}
 
+# ================== ADMIN COMMANDS (يجب أن تكون قبل الهاندلر العام) ==================
+
+ADMIN_ID = 7717061636  # تأكد من الرقم
+
+@dp.message(Command("genshort"))
+async def cmd_genshort(message: Message):
+    await handle_admin_gen(message, duration_days=0, title="كودات ساعة واحدة")
+
+@dp.message(Command("genweek"))
+async def cmd_genweek(message: Message):
+    await handle_admin_gen(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
+
+async def handle_admin_gen(message: Message, duration_days: int, title: str):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("غير مصرح لك!")
+        return
+
+    parts = message.text.strip().split()
+    count = 1
+    if len(parts) > 1:
+        try:
+            count = int(parts[1])
+        except ValueError:
+            count = 1
+
+    count = min(count, 20)
+
+    codes_list = []
+    for _ in range(count):
+        code, expires = create_subscription_code(duration_days)
+        expires_clean = expires.split('.')[0]
+        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
+
+    reply_text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
+    await message.answer(reply_text, parse_mode="MarkdownV2")
+
 # ================== BOT FLOW ==================
 
 @dp.message(CommandStart())
@@ -203,48 +239,13 @@ async def enter_code(callback: CallbackQuery):
     await callback.message.answer("🔐 ارسل الكود الآن:")
     await callback.answer()
 
-# ================== ADMIN COMMANDS (ضعها قبل الهاندلر العام) ==================
-
-ADMIN_ID = 7717061636  # رقمك
-
-@dp.message(Command("genshort"))
-async def cmd_genshort(message: Message):
-    await handle_admin_gen(message, duration_days=0, title="كودات ساعة واحدة")
-
-@dp.message(Command("genweek"))
-async def cmd_genweek(message: Message):
-    await handle_admin_gen(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
-
-async def handle_admin_gen(message: Message, duration_days: int, title: str):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("غير مصرح لك!")
-        return
-
-    # قراءة العدد
-    text = message.text.strip()
-    parts = text.split()
-    count = 1
-    if len(parts) > 1:
-        try:
-            count = int(parts[1])
-        except ValueError:
-            count = 1
-
-    count = min(count, 20)
-
-    codes_list = []
-    for _ in range(count):
-        code, expires = create_subscription_code(duration_days)
-        expires_clean = expires.split('.')[0]
-        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
-
-    reply_text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
-    await message.answer(reply_text, parse_mode="MarkdownV2")
-
-# ================== عام (يأتي بعد الأوامر الإدارية) ==================
-
+# الهاندلر العام (يجب أن يأتي بعد الأوامر الإدارية)
 @dp.message()
 async def handle_text(message: Message):
+    # تجاهل إذا كان الأمر يبدأ بـ / (عشان ما يأخذ الأوامر الإدارية)
+    if message.text.strip().startswith('/'):
+        return
+
     user_id = message.from_user.id
     text = message.text.strip()
 
@@ -255,7 +256,7 @@ async def handle_text(message: Message):
 
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# باقي الكود (callback handlers) نفسها بدون تغيير
+# باقي callback handlers
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
