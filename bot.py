@@ -203,6 +203,46 @@ async def enter_code(callback: CallbackQuery):
     await callback.message.answer("🔐 ارسل الكود الآن:")
     await callback.answer()
 
+# ================== ADMIN COMMANDS (ضعها قبل الهاندلر العام) ==================
+
+ADMIN_ID = 7717061636  # رقمك
+
+@dp.message(Command("genshort"))
+async def cmd_genshort(message: Message):
+    await handle_admin_gen(message, duration_days=0, title="كودات ساعة واحدة")
+
+@dp.message(Command("genweek"))
+async def cmd_genweek(message: Message):
+    await handle_admin_gen(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
+
+async def handle_admin_gen(message: Message, duration_days: int, title: str):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("غير مصرح لك!")
+        return
+
+    # قراءة العدد
+    text = message.text.strip()
+    parts = text.split()
+    count = 1
+    if len(parts) > 1:
+        try:
+            count = int(parts[1])
+        except ValueError:
+            count = 1
+
+    count = min(count, 20)
+
+    codes_list = []
+    for _ in range(count):
+        code, expires = create_subscription_code(duration_days)
+        expires_clean = expires.split('.')[0]
+        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
+
+    reply_text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
+    await message.answer(reply_text, parse_mode="MarkdownV2")
+
+# ================== عام (يأتي بعد الأوامر الإدارية) ==================
+
 @dp.message()
 async def handle_text(message: Message):
     user_id = message.from_user.id
@@ -215,6 +255,7 @@ async def handle_text(message: Message):
 
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
+# باقي الكود (callback handlers) نفسها بدون تغيير
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -295,48 +336,11 @@ async def choose_hand(callback: CallbackQuery):
     user_temp.pop(user_id, None)
     await callback.answer()
 
-# ================== ADMIN COMMANDS ==================
-
-ADMIN_ID = 7717061636  # تأكد من الرقم
-
-@dp.message(Command("genshort"))
-async def cmd_genshort(message: Message):
-    await handle_admin_codes(message, 0, "كودات ساعة واحدة")
-
-@dp.message(Command("genweek"))
-async def cmd_genweek(message: Message):
-    await handle_admin_codes(message, 7, "كودات أسبوعية (7 أيام)")
-
-async def handle_admin_codes(message: Message, duration_days: int, title: str):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("غير مصرح لك بهذا الأمر!")
-        return
-
-    parts = message.text.strip().split()
-    count = 1
-    if len(parts) > 1:
-        try:
-            count = int(parts[1])
-        except ValueError:
-            pass
-
-    count = min(count, 20)
-
-    codes_list = []
-    for _ in range(count):
-        code, expires = create_subscription_code(duration_days)
-        expires_clean = expires.split('.')[0]
-        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
-
-    text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
-    
-    await message.answer(text, parse_mode="MarkdownV2")
-
 # ================== RUN ==================
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    await bot.delete_webhook(drop_pending_updates=True)  # مهم جداً لمنع الـ conflict
+    await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Webhook deleted, starting polling")
     await dp.start_polling(bot, skip_updates=True)
 
