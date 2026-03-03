@@ -12,24 +12,19 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 # ================== CONFIG ==================
 
-API_TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = "8664632562:AAH9KQRkNDI9h6pVy3t6VFhitIrHCcyi-V8"
+ADMIN_ID = 7717061636  # ضع الايدي مالك
 
-if not API_TOKEN:
-    raise ValueError("BOT_TOKEN not set in environment variables")
-
-ADMIN_ID = 7717061636  # غيره إلى رقمك
-
-DB_PATH = "texas_bot.db"
-
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
+DB_PATH = "texas_ai_v4.db"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-
-user_temp = {}  # تخزين مؤقت لاختيار الورقة
+user_temp = {}
 
 # ================== DATABASE ==================
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users(
@@ -46,7 +41,7 @@ CREATE TABLE IF NOT EXISTS codes(
     is_used INTEGER DEFAULT 0,
     used_by INTEGER,
     created_at TEXT,
-    expires_at TEXT
+    duration_days INTEGER
 )
 """)
 
@@ -62,47 +57,32 @@ CREATE TABLE IF NOT EXISTS games(
 
 conn.commit()
 
+HANDS = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
+
 # ================== HELPERS ==================
 
 def generate_code(length=8):
-    characters = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(characters) for _ in range(length))
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
 
-def create_subscription_code(days=7):
-    code = generate_code()
-    created_at = datetime.now().isoformat()
-    expires_at = (datetime.now() + timedelta(days=days)).isoformat()
-
-    cursor.execute("""
-    INSERT INTO codes (code, is_used, created_at, expires_at)
-    VALUES (?, 0, ?, ?)
-    """, (code, created_at, expires_at))
-    conn.commit()
-    return code
-
-def check_subscription(user_id: int):
+def check_subscription(user_id):
     cursor.execute("SELECT subscription_until FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     if not row or not row[0]:
         return False
     return datetime.fromisoformat(row[0]) > datetime.now()
 
-def activate_code(user_id: int, code: str):
-    cursor.execute("SELECT is_used, expires_at FROM codes WHERE code=?", (code,))
+def activate_code(user_id, code):
+    cursor.execute("SELECT is_used, duration_days FROM codes WHERE code=?", (code,))
     row = cursor.fetchone()
 
     if not row:
         return False, "❌ الكود غير موجود"
+    if row[0] == 1:
+        return False, "❌ الكود مستخدم سابقاً"
 
-    is_used, expires_at = row
-
-    if is_used:
-        return False, "❌ الكود مستخدم"
-
-    if datetime.fromisoformat(expires_at) < datetime.now():
-        return False, "❌ الكود منتهي"
-
-    expire_date = datetime.now() + timedelta(days=7)
+    duration = row[1]
+    expire_date = datetime.now() + timedelta(days=duration)
 
     cursor.execute("""
     INSERT OR REPLACE INTO users(user_id, subscription_until, trained_rounds, last_hand)
@@ -112,7 +92,7 @@ def activate_code(user_id: int, code: str):
     cursor.execute("UPDATE codes SET is_used=1, used_by=? WHERE code=?", (user_id, code))
     conn.commit()
 
-    return True, "✅ تم تفعيل الاشتراك لمدة 7 أيام"
+    return True, f"✅ تم تفعيل الاشتراك لمدة {duration} يوم"
 
 def save_game(rank, suit, previous_hand, current_hand):
     cursor.execute("""
@@ -121,58 +101,101 @@ def save_game(rank, suit, previous_hand, current_hand):
     """, (rank, suit, previous_hand, current_hand, datetime.now().isoformat()))
     conn.commit()
 
+# ================== SMART AI ==================
+
 def predict_hand(rank, suit, last_hand):
-    # تخمين بسيط عشوائي (يمكن تطويره لاحقاً)
-    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
-    return random.choice(hands)
+    # --- 1) احصائيات حسب الرتبة + النوع
+    cursor.execute("""
+    SELECT current_hand, COUNT(*) 
+    FROM games
+    WHERE rank=? AND suit=?
+    GROUP BY current_hand
+    """, (rank, suit))
+    rs_data = dict(cursor.fetchall())
+
+    # --- 2) احصائيات انتقال من الضربة السابقة (Markov)
+    markov_data = {}
+    if last_hand:
+        cursor.execute("""
+        SELECT current_hand, COUNT(*)
+        FROM games
+        WHERE previous_hand=?
+        GROUP BY current_hand
+        """, (last_hand,))
+        markov_data = dict(cursor.fetchall())
+
+    scores = {}
+
+    for h in HANDS:
+        rs_score = rs_data.get(h, 0)
+        mk_score = markov_data.get(h, 0)
+
+        # وزن 60% rank+suit ، 40% انتقال
+        score = (rs_score * 0.6) + (mk_score * 0.4)
+        scores[h] = score
+
+    if all(v == 0 for v in scores.values()):
+        return random.choice(HANDS), 0
+
+    prediction = max(scores, key=scores.get)
+    total = sum(scores.values())
+    confidence = int((scores[prediction] / total) * 100) if total > 0 else 0
+
+    return prediction, confidence
 
 # ================== KEYBOARDS ==================
 
-def ranks_keyboard():
+def ranks_kb():
     ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
-    buttons = [[InlineKeyboardButton(text=r, callback_data=f"rank_{r}") for r in ranks[i:i+4]] for i in range(0, len(ranks), 4)]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    rows = [ranks[i:i+4] for i in range(0,len(ranks),4)]
+    keyboard = [[InlineKeyboardButton(text=r, callback_data=f"rank_{r}") for r in row] for row in rows]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def suits_keyboard():
+def suits_kb():
     suits = ["♥️","♦️","♣️","♠️"]
-    buttons = [[InlineKeyboardButton(text=s, callback_data=f"suit_{s}") for s in suits]]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    keyboard = [[InlineKeyboardButton(text=s, callback_data=f"suit_{s}") for s in suits]]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def hands_keyboard():
-    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
-    buttons = [[InlineKeyboardButton(text=h, callback_data=f"hand_{h}")] for h in hands]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def hands_kb():
+    keyboard = [[InlineKeyboardButton(text=h, callback_data=f"hand_{h}")] for h in HANDS]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # ================== ADMIN ==================
 
 @dp.message(Command("addcode"))
 async def add_code(message: Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("غير مصرح")
+        await message.answer("غير مصرح ❌")
         return
 
     parts = message.text.split()
     days = int(parts[1]) if len(parts) > 1 else 7
+    code = generate_code()
 
-    code = create_subscription_code(days)
-    await message.answer(f"✅ الكود:\n`{code}`", parse_mode="Markdown")
+    cursor.execute("""
+    INSERT INTO codes(code, is_used, created_at, duration_days)
+    VALUES(?, 0, ?, ?)
+    """, (code, datetime.now().isoformat(), days))
+    conn.commit()
+
+    await message.answer(f"✅ كود:\n`{code}`\nمدة: {days} يوم", parse_mode="Markdown")
 
 # ================== START ==================
 
 @dp.message(CommandStart())
 async def start(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔐 إدخال الكود", callback_data="enter_code")]
+        [InlineKeyboardButton(text="🔐 إدخال الكود", callback_data="enter")]
     ])
-    await message.answer("🔥 اهلاً بك في بوت تكساس\nادخل الكود لتفعيل الاشتراك", reply_markup=kb)
+    await message.answer("🔥 Texas AI V4\nادخل الكود لتفعيل الاشتراك", reply_markup=kb)
 
-@dp.callback_query(lambda c: c.data == "enter_code")
-async def enter_code(callback: CallbackQuery):
-    await callback.message.answer("🔐 ارسل الكود الآن:")
+@dp.callback_query(lambda c: c.data == "enter")
+async def enter(callback: CallbackQuery):
+    await callback.message.answer("📩 ارسل الكود الآن:")
     await callback.answer()
 
 @dp.message()
-async def handle_code(message: Message):
+async def handle_text(message: Message):
     user_id = message.from_user.id
 
     if not check_subscription(user_id):
@@ -183,48 +206,46 @@ async def handle_code(message: Message):
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎮 بدء التخمين", callback_data="start_guess")]
             ])
-            await message.answer("اضغط للبدء:", reply_markup=kb)
+            await message.answer("اضغط لبدء التخمين:", reply_markup=kb)
         return
 
-    await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+    await message.answer("اختر رقم الورقة:", reply_markup=ranks_kb())
 
 @dp.callback_query(lambda c: c.data == "start_guess")
 async def start_guess(callback: CallbackQuery):
-    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_kb())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
-async def choose_rank(callback: CallbackQuery):
+async def rank(callback: CallbackQuery):
     user_id = callback.from_user.id
-    rank = callback.data.split("_")[1]
-
-    user_temp[user_id] = {"rank": rank}
-    await callback.message.answer("اختر النوع:", reply_markup=suits_keyboard())
+    r = callback.data.split("_")[1]
+    user_temp[user_id] = {"rank": r}
+    await callback.message.answer("اختر النوع:", reply_markup=suits_kb())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("suit_"))
-async def choose_suit(callback: CallbackQuery):
+async def suit(callback: CallbackQuery):
     user_id = callback.from_user.id
-    suit = callback.data.split("_")[1]
-
-    user_temp[user_id]["suit"] = suit
+    s = callback.data.split("_")[1]
+    user_temp[user_id]["suit"] = s
 
     cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
     trained, last_hand = cursor.fetchone()
 
     if trained < 3:
-        await callback.message.answer(f"⚠️ تدريب {trained+1}/3\nشنو كانت ضربتك؟", reply_markup=hands_keyboard())
+        await callback.message.answer(f"⚠️ تدريب {trained+1}/3\nشنو كانت ضربتك؟", reply_markup=hands_kb())
     else:
-        prediction = predict_hand(user_temp[user_id]["rank"], suit, last_hand)
-        await callback.message.answer(f"🤖 تخميني:\n{prediction}")
-        await callback.message.answer("شنو كانت ضربتك؟", reply_markup=hands_keyboard())
+        prediction, confidence = predict_hand(user_temp[user_id]["rank"], s, last_hand)
+        await callback.message.answer(f"🤖 تخميني: {prediction}\n📊 نسبة الثقة: {confidence}%")
+        await callback.message.answer("شنو كانت ضربتك؟", reply_markup=hands_kb())
 
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("hand_"))
-async def choose_hand(callback: CallbackQuery):
+async def hand(callback: CallbackQuery):
     user_id = callback.from_user.id
-    current_hand = callback.data.replace("hand_", "")
+    current = callback.data.replace("hand_", "")
 
     data = user_temp.get(user_id)
     if not data:
@@ -232,22 +253,18 @@ async def choose_hand(callback: CallbackQuery):
         return
 
     cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
-    trained, previous_hand = cursor.fetchone()
+    trained, previous = cursor.fetchone()
 
-    save_game(data["rank"], data["suit"], previous_hand, current_hand)
+    save_game(data["rank"], data["suit"], previous, current)
 
     trained += 1
-
-    cursor.execute("""
-    UPDATE users SET trained_rounds=?, last_hand=?
-    WHERE user_id=?
-    """, (trained, current_hand, user_id))
+    cursor.execute("UPDATE users SET trained_rounds=?, last_hand=? WHERE user_id=?", (trained, current, user_id))
     conn.commit()
 
     user_temp.pop(user_id, None)
 
     await callback.message.answer("✅ تم حفظ الجولة\n\nاختر رقم جديد:")
-    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_kb())
     await callback.answer()
 
 # ================== RUN ==================
