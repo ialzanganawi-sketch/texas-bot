@@ -130,6 +130,29 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
 
     return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(كان الكود صالح حتى: {expires_at.strftime('%Y-%m-%d %H:%M')})"
 
+def predict_hand(rank: str, suit: str, previous_hand: str | None) -> str:
+    scores = {}
+    cursor.execute("SELECT current_hand FROM games WHERE rank=? AND suit=?", (rank, suit))
+    for row in cursor.fetchall():
+        scores[row[0]] = scores.get(row[0], 0) + 1
+
+    if previous_hand:
+        cursor.execute("SELECT current_hand FROM games WHERE previous_hand=?", (previous_hand,))
+        for row in cursor.fetchall():
+            scores[row[0]] = scores.get(row[0], 0) + 2
+
+    if not scores:
+        return "👥 زوجين"
+
+    return max(scores, key=scores.get)
+
+def save_game(rank: str, suit: str, previous_hand: str | None, current_hand: str):
+    cursor.execute("""
+    INSERT INTO games(rank, suit, previous_hand, current_hand, created_at)
+    VALUES(?,?,?,?,?)
+    """, (rank, suit, previous_hand, current_hand, datetime.now().isoformat()))
+    conn.commit()
+
 # ================== KEYBOARDS ==================
 
 def ranks_keyboard() -> InlineKeyboardMarkup:
@@ -152,6 +175,10 @@ def hands_keyboard() -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
     kb.add(*buttons)
     return kb
+
+# ================== TEMP STORAGE ==================
+
+user_temp: dict[int, dict] = {}
 
 # ================== ADMIN COMMANDS ==================
 
@@ -214,20 +241,73 @@ async def handle_text(message: Message):
 
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# باقي الـ callbacks (مختصرة ومصححة)
+# ================== CALLBACKS ==================
+
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
-    user_temp[user_id] = {"rank": callback.data.split("_")[1]}
+    user_temp[user_id] = {}
+    user_temp[user_id]["rank"] = callback.data.split("_")[1]
     await callback.message.answer("اختر نوع الورقة:", reply_markup=suits_keyboard())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("suit_"))
 async def choose_suit(callback: CallbackQuery):
     user_id = callback.from_user.id
+    if user_id not in user_temp:
+        user_temp[user_id] = {}
     user_temp[user_id]["suit"] = callback.data.split("_")[1]
-    # ... (باقي الكود كما هو)
-    # (للاختصار، يمكنك إبقاء باقي الـ callback handlers كما هي من الكود السابق)
+
+    cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if row is None:
+        await callback.message.answer("خطأ في قاعدة البيانات، جرب /start مرة أخرى")
+        await callback.answer()
+        return
+
+    trained, last_hand = row
+
+    if trained < 3:
+        await callback.message.answer(f"⚠️ جولة تدريب رقم {trained+1} من 3\n\nشنو كانت ضربتك؟", reply_markup=hands_keyboard())
+    else:
+        prediction = predict_hand(user_temp[user_id]["rank"], user_temp[user_id]["suit"], last_hand)
+        user_temp[user_id]["prediction"] = prediction
+        await callback.message.answer(f"🤖 تخميني:\n\n{prediction}")
+        await callback.message.answer("شنو كانت ضربتك الحقيقية؟", reply_markup=hands_keyboard())
+
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("hand_"))
+async def choose_hand(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    current_hand = callback.data.replace("hand_", "")
+
+    if user_id not in user_temp or "rank" not in user_temp[user_id] or "suit" not in user_temp[user_id]:
+        await callback.message.answer("خطأ في التسلسل، جرب من جديد")
+        await callback.answer()
+        return
+
+    cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if row is None:
+        await callback.message.answer("خطأ في قاعدة البيانات")
+        await callback.answer()
+        return
+
+    trained, previous_hand = row
+
+    save_game(user_temp[user_id]["rank"], user_temp[user_id]["suit"], previous_hand, current_hand)
+
+    trained += 1
+
+    cursor.execute("UPDATE users SET trained_rounds=?, last_hand=? WHERE user_id=?", (trained, current_hand, user_id))
+    conn.commit()
+
+    await callback.message.answer("✅ تم حفظ الجولة.\n\nاختر رقم الورقة الجديدة:")
+    await callback.message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+
+    user_temp.pop(user_id, None)
+    await callback.answer()
 
 # ================== RUN ==================
 
