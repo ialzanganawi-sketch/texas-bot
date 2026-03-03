@@ -197,4 +197,8 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     if not is_activated(context, user_id):
         await update.message.reply_text(
-    "⚠️ ميزة التنبؤ متاحة فقط للمشتركين المفعّلين."
+    "⚠️ ميزة التنبؤ متاحة فقط للمشتركين المفعّلين.\n\n"
+    "للتفعيل:\n"
+    "1. أرسل /start واختار نوع الضربة\n"
+    "2. أرسل /activate SECRET123"
+)
