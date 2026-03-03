@@ -12,7 +12,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 # ================== CONFIG ==================
 
-API_TOKEN = "8664632562:AAH9KQRkNDI9h6pVy3t6VFhitIrHCcyi-V8"
+API_TOKEN = "8664632562:AAHx3XTqcKF_dBIwyt5l4Bldg5Ezk2wK7A4"
 ADMIN_ID = 7717061636  # ضع الايدي مالك
 
 DB_PATH = "texas_ai_v4.db"
