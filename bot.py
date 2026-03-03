@@ -22,17 +22,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ────────────────────────────────────────────────
+# إعدادات أساسية
+# ────────────────────────────────────────────────
+
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("TOKEN غير موجود!")
+    raise ValueError("TOKEN غير موجود في Environment Variables")
 
-ACTIVATION_CODE = "SECRET123"  # غيّره
+ACTIVATION_CODE = "SECRET123"  # غيّره إلى كود قوي
 
 SA_TZ = ZoneInfo("Asia/Riyadh")
 
 # حالات المحادثة
 ASK_RANK, ASK_SUIT, ASK_LAST_HIT, ASK_ACTUAL_HIT = range(4)
 
+# خيارات الأرقام
 RANK_OPTIONS = [
     ["2", "3", "4", "5"],
     ["6", "7", "8", "9"],
@@ -42,12 +47,17 @@ RANK_OPTIONS = [
 
 SUIT_EMOJIS = ["♥️", "♦️", "♣️", "♠️", "↩️ رجوع"]
 
+# الضربات المحدودة فقط (اللي طلبتها)
 HIT_OPTIONS = [
     ["أربعة من نوع واحد", "زوجين"],
     ["فل هاوس", "متتالية"],
     ["ثلاثة"],
     ["↩️ إلغاء"]
 ]
+
+# ────────────────────────────────────────────────
+# دوال مساعدة
+# ────────────────────────────────────────────────
 
 def is_activated(context, user_id: int) -> bool:
     return user_id in context.application.bot_data.get("activated", {})
@@ -57,6 +67,9 @@ def activate_user(context, user_id: int, choice: str):
     activated[user_id] = choice
 
 def get_smart_prediction(last_hit: str, history: deque) -> list:
+    """
+    توقع ذكي يعتمد على التاريخ المحفوظ
+    """
     if not history:
         return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
@@ -80,18 +93,21 @@ def get_smart_prediction(last_hit: str, history: deque) -> list:
 
     return ["زوجين", "ثلاثة", "فل هاوس", "أربعة من نوع واحد"]
 
-async def start_new_round(query_or_update, context):
-    """يبدأ جولة جديدة أوتوماتيكياً"""
+async def start_new_round(update_or_query, context, edit=True):
+    """يبدأ جولة جديدة تلقائياً"""
     keyboard = []
     for row in RANK_OPTIONS:
         keyboard.append([InlineKeyboardButton(r, callback_data=f"rank_{r}") for r in row])
 
     text = "جولة جديدة بدأت!\nأولاً: اختر رقم آخر ورقة مكشوفة"
 
-    if hasattr(query_or_update, "edit_message_text"):
-        await query_or_update.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    if edit and hasattr(update_or_query, "edit_message_text"):
+        await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await query_or_update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        if hasattr(update_or_query, "message"):
+            await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     return ASK_RANK
 
@@ -216,9 +232,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         context.user_data["last_hit"] = hit
 
+        # التخمين المباشر
         await do_smart_prediction(query, context)
 
-        # بعد التخمين مباشرة يسأل عن الضربة الفعلية
+        # سؤال الضربة الفعلية أوتوماتيكياً
         keyboard = []
         for row in HIT_OPTIONS:
             keyboard.append([InlineKeyboardButton(txt, callback_data=f"actual_{txt}") for txt in row])
@@ -235,7 +252,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         history = context.application.bot_data.setdefault("smart_history", {}).setdefault(uid, deque(maxlen=20))
 
         if actual != "↩️ إلغاء":
-            # حفظ الجولة الكاملة: (الضربة المتوقعة السابقة, الرقم, النوع, الضربة الفعلية)
             history.append((
                 context.user_data.get("last_hit", "غير معروف"),
                 context.user_data.get("last_rank", "?"),
@@ -246,8 +262,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await query.message.reply_text("تم التخطي بدون حفظ")
 
-        # بدء جولة جديدة أوتوماتيكياً
-        await start_new_round(query, context)
+        # بدء جولة جديدة تلقائياً
+        await start_new_round(query, context, edit=False)
         return ASK_RANK
 
     return ConversationHandler.END
@@ -289,7 +305,9 @@ def main():
 
     conv_choice = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
-        states={CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]},
+        states={
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)]
+        },
         fallbacks=[],
     )
 
