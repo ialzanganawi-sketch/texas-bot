@@ -130,7 +130,7 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
 
     return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(كان الكود صالح حتى: {expires_at.strftime('%Y-%m-%d %H:%M')})"
 
-# ================== KEYBOARDS (مصححة) ==================
+# ================== KEYBOARDS ==================
 
 def ranks_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=4)
@@ -148,20 +148,14 @@ def suits_keyboard() -> InlineKeyboardMarkup:
 
 def hands_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    hands = [
-        "👥 زوجين",
-        "🔗 متتالية",
-        "🎴 ثلاثة",
-        "🏠 فل هاوس",
-        "🂡 أربعة"
-    ]
+    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
     buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
     kb.add(*buttons)
     return kb
 
-# ================== ADMIN COMMANDS ==================
+# ================== ADMIN COMMANDS (مهم جداً: قبل أي هاندلر عام) ==================
 
-ADMIN_ID = 7717061636
+ADMIN_ID = 7717061636   # غير هذا الرقم إلى رقمك الحقيقي من @userinfobot
 
 @dp.message(Command("genshort"))
 async def cmd_genshort(message: Message):
@@ -183,6 +177,7 @@ async def handle_admin_gen(message: Message, duration_days: int, title: str):
             count = int(parts[1])
         except ValueError:
             count = 1
+
     count = min(count, 20)
 
     codes_list = []
@@ -209,7 +204,7 @@ async def enter_code(callback: CallbackQuery):
 @dp.message()
 async def handle_text(message: Message):
     if message.text and message.text.strip().startswith('/'):
-        return
+        return   # مهم: يتجاهل الأوامر الإدارية
 
     user_id = message.from_user.id
     text = message.text.strip()
