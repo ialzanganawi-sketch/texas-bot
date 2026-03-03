@@ -148,14 +148,20 @@ def suits_keyboard() -> InlineKeyboardMarkup:
 
 def hands_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
+    hands = [
+        "👥 زوجين",
+        "🔗 متتالية",
+        "🎴 ثلاثة",
+        "🏠 فل هاوس",
+        "🂡 أربعة"
+    ]
     buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
     kb.add(*buttons)
     return kb
 
-# ================== ADMIN COMMANDS (مهم جداً: قبل أي هاندلر عام) ==================
+# ================== ADMIN COMMANDS ==================
 
-ADMIN_ID = 7717061636   # غير هذا الرقم إلى رقمك الحقيقي من @userinfobot
+ADMIN_ID = 7717061636
 
 @dp.message(Command("genshort"))
 async def cmd_genshort(message: Message):
@@ -177,7 +183,6 @@ async def handle_admin_gen(message: Message, duration_days: int, title: str):
             count = int(parts[1])
         except ValueError:
             count = 1
-
     count = min(count, 20)
 
     codes_list = []
@@ -204,7 +209,7 @@ async def enter_code(callback: CallbackQuery):
 @dp.message()
 async def handle_text(message: Message):
     if message.text and message.text.strip().startswith('/'):
-        return   # مهم: يتجاهل الأوامر الإدارية
+        return
 
     user_id = message.from_user.id
     text = message.text.strip()
