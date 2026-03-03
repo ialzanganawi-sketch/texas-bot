@@ -1,8 +1,8 @@
-import sqlite3
 import asyncio
 import logging
 import random
 import string
+import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -10,86 +10,83 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 
-API_TOKEN = "8664632562:AAEhHhz2kudRdtjAs5z2s29Ui31pyrl92EU"
-ADMIN_ID = 7717061636  # حط ايديك هنا
-DB_PATH = "texas_v7.db"
+API_TOKEN = "8664632562:AAHD6xaPk01W7cfX1zADS8hRwh-mfVW7s4k"
+ADMIN_ID = 7717061636  # ضع ايديك هنا
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+DATA_FILE = "training_data.json"
+CODES_FILE = "codes.json"
+USERS_FILE = "users.json"
+
 user_temp = {}
+AI_MEMORY = []
 
-# ================== DATABASE ==================
+# ================= STORAGE =================
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
+def load_json(file):
+    try:
+        with open(file, "r") as f:
+            return json.load(f)
+    except:
+        return {}
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users(
-    user_id INTEGER PRIMARY KEY,
-    subscription_until TEXT
-)
-""")
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS codes(
-    code TEXT PRIMARY KEY,
-    is_used INTEGER DEFAULT 0,
-    used_by INTEGER,
-    duration_days INTEGER,
-    created_at TEXT
-)
-""")
+users = load_json(USERS_FILE)
+codes = load_json(CODES_FILE)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS games(
-    rank TEXT,
-    suit TEXT,
-    previous_hand TEXT,
-    current_hand TEXT,
-    created_at TEXT
-)
-""")
+def load_training():
+    global AI_MEMORY
+    try:
+        with open(DATA_FILE, "r") as f:
+            AI_MEMORY = json.load(f)
+    except:
+        AI_MEMORY = []
 
-conn.commit()
+def save_training():
+    with open(DATA_FILE, "w") as f:
+        json.dump(AI_MEMORY, f)
 
-# ================== AI ==================
+# حفظ تلقائي كل 5 دقائق
+async def auto_save():
+    while True:
+        await asyncio.sleep(300)
+        save_training()
+
+# ================= AI ENGINE =================
 
 def ai_ready():
-    cursor.execute("SELECT COUNT(*) FROM games")
-    return cursor.fetchone()[0] >= 20
-
+    return len(AI_MEMORY) >= 20
 
 def train_ai(rank, suit, prev, curr):
-    cursor.execute("""
-    INSERT INTO games(rank, suit, previous_hand, current_hand, created_at)
-    VALUES (?, ?, ?, ?, ?)
-    """, (rank, suit, prev, curr, datetime.now().isoformat()))
-    conn.commit()
-
+    AI_MEMORY.insert(0, {
+        "rank": rank,
+        "suit": suit,
+        "prev": prev,
+        "curr": curr,
+        "time": datetime.now().isoformat()
+    })
 
 def predict_hand(rank, suit, last_hand=None):
+
     if not ai_ready():
-        return "🧠 الذكاء غير مكتمل.\nلازم 20 جولة تدريب من الادمن."
+        return "🧠 الذكاء يحتاج 20 جولة تدريب من الادمن."
 
     hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
     scores = {h: 5 for h in hands}
 
-    cursor.execute("""
-    SELECT rank, suit, previous_hand, current_hand, created_at
-    FROM games
-    ORDER BY created_at DESC
-    LIMIT 300
-    """)
-    rows = cursor.fetchall()
-
     now = datetime.now()
 
-    for r, s, prev, curr, created in rows:
-        created_time = datetime.fromisoformat(created)
-        days_old = (now - created_time).days
+    for item in AI_MEMORY[:300]:
+
+        created = datetime.fromisoformat(item["time"])
+        days_old = (now - created).days
 
         if days_old <= 3:
             time_weight = 4
@@ -98,13 +95,13 @@ def predict_hand(rank, suit, last_hand=None):
         else:
             time_weight = 1
 
-        if r == rank and s == suit:
-            scores[curr] += 6 * time_weight
+        if item["rank"] == rank and item["suit"] == suit:
+            scores[item["curr"]] += 6 * time_weight
 
-        if last_hand and prev == last_hand:
-            scores[curr] += 4 * time_weight
+        if last_hand and item["prev"] == last_hand:
+            scores[item["curr"]] += 4 * time_weight
 
-        scores[curr] += 1
+        scores[item["curr"]] += 1
 
     total = sum(scores.values())
 
@@ -120,46 +117,38 @@ def predict_hand(rank, suit, last_hand=None):
     low = sorted_hands[-1]
 
     return (
-        f"🎯 TEXAS AI V7 PRO\n\n"
+        f"🎯 TEXAS AI V8 ULTRA\n\n"
         f"🔥 عالي:\n{high[0]} ({high[1]}%)\n\n"
         f"⚖️ متوسط:\n{mid[0]} ({mid[1]}%)\n\n"
         f"⚠️ منخفض:\n{low[0]} ({low[1]}%)"
     )
 
-# ================== SUBSCRIPTION ==================
+# ================= SUBSCRIPTION =================
 
-def generate_code(length=8):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
+def generate_code():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 def check_subscription(user_id):
-    cursor.execute("SELECT subscription_until FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
+    if str(user_id) not in users:
         return False
-    return datetime.fromisoformat(row[0]) > datetime.now()
-
+    return datetime.fromisoformat(users[str(user_id)]) > datetime.now()
 
 def activate_code(user_id, code):
-    cursor.execute("SELECT is_used, duration_days FROM codes WHERE code=?", (code,))
-    row = cursor.fetchone()
-
-    if not row:
+    if code not in codes:
         return False, "❌ الكود غير موجود"
-    if row[0] == 1:
+    if codes[code]["used"]:
         return False, "❌ الكود مستخدم"
 
-    expire = datetime.now() + timedelta(days=row[1])
+    expire = datetime.now() + timedelta(days=codes[code]["days"])
+    users[str(user_id)] = expire.isoformat()
+    codes[code]["used"] = True
 
-    cursor.execute("INSERT OR REPLACE INTO users VALUES(?,?)",
-                   (user_id, expire.isoformat()))
-    cursor.execute("UPDATE codes SET is_used=1, used_by=? WHERE code=?",
-                   (user_id, code))
-    conn.commit()
+    save_json(USERS_FILE, users)
+    save_json(CODES_FILE, codes)
 
     return True, "✅ تم تفعيل الاشتراك"
 
-# ================== KEYBOARDS ==================
+# ================= KEYBOARDS =================
 
 def ranks_kb():
     ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
@@ -184,7 +173,7 @@ def hands_kb(optional=False):
         kb.append([InlineKeyboardButton(text="بدون", callback_data="hand_none")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ================== ADMIN ==================
+# ================= ADMIN =================
 
 @dp.message(Command("addcode"))
 async def add_code(message: Message):
@@ -194,32 +183,23 @@ async def add_code(message: Message):
     days = int(message.text.split()[1]) if len(message.text.split()) > 1 else 7
     code = generate_code()
 
-    cursor.execute("INSERT INTO codes VALUES(?,?,?,?,?)",
-                   (code,0,None,days,datetime.now().isoformat()))
-    conn.commit()
+    codes[code] = {"used": False, "days": days}
+    save_json(CODES_FILE, codes)
 
     await message.answer(f"كود جديد:\n`{code}`\nالمدة: {days} يوم", parse_mode="Markdown")
 
 @dp.message(Command("train"))
-async def admin_train(message: Message):
+async def train(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     user_temp[message.from_user.id] = {"mode": "train"}
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_kb())
 
-# ================== FLOW ==================
+# ================= FLOW =================
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔐 إدخال كود", callback_data="enter")]
-    ])
-    await message.answer("🔥 TEXAS AI V7 PRO", reply_markup=kb)
-
-@dp.callback_query(lambda c: c.data == "enter")
-async def enter(callback: CallbackQuery):
-    await callback.message.answer("ارسل الكود:")
-    await callback.answer()
+    await message.answer("🔥 TEXAS AI V8\nادخل كود الاشتراك")
 
 @dp.message()
 async def handle_text(message: Message):
@@ -235,13 +215,11 @@ async def choose_rank(callback: CallbackQuery):
     user_temp[callback.from_user.id] = user_temp.get(callback.from_user.id, {})
     user_temp[callback.from_user.id]["rank"] = callback.data.split("_")[1]
     await callback.message.edit_text("اختر النوع:", reply_markup=suits_kb())
-    await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("suit_"))
 async def choose_suit(callback: CallbackQuery):
     user_temp[callback.from_user.id]["suit"] = callback.data.split("_")[1]
     await callback.message.edit_text("الضربة السابقة؟ (اختياري)", reply_markup=hands_kb(optional=True))
-    await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("hand_"))
 async def choose_hand(callback: CallbackQuery):
@@ -266,7 +244,6 @@ async def choose_hand(callback: CallbackQuery):
     result = predict_hand(rank, suit, prev)
     await callback.message.edit_text(result)
     user_temp.pop(user_id, None)
-    await callback.answer()
 
 @dp.callback_query(lambda c: True)
 async def train_result(callback: CallbackQuery):
@@ -276,13 +253,15 @@ async def train_result(callback: CallbackQuery):
     if user_id == ADMIN_ID and data and data.get("mode") == "train_result":
         curr = callback.data.replace("hand_", "")
         train_ai(data["rank"], data["suit"], data["prev"], curr)
-        await callback.message.edit_text("✅ تم حفظ التدريب\nالجولات الحالية تتحدث يومياً")
+        await callback.message.edit_text("✅ تم حفظ التدريب\nالذكاء يزيد يومياً 🔥")
         user_temp.pop(user_id, None)
 
-# ================== RUN ==================
+# ================= RUN =================
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    load_training()
+    asyncio.create_task(auto_save())
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
