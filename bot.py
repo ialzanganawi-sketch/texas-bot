@@ -67,11 +67,6 @@ def generate_code(length=10):
     return ''.join(random.choice(characters) for _ in range(length))
 
 def create_subscription_code(duration_days=7):
-    """
-    duration_days:
-      7   → اشتراك أسبوعي
-      0   → تجربة ساعة واحدة
-    """
     code = generate_code()
     
     while True:
@@ -108,11 +103,7 @@ def check_subscription(user_id: int) -> bool:
         return False
 
 def activate_code(user_id: int, code: str) -> tuple[bool, str]:
-    cursor.execute("""
-    SELECT is_used, expires_at 
-    FROM codes 
-    WHERE code=?
-    """, (code,))
+    cursor.execute("SELECT is_used, expires_at FROM codes WHERE code=?", (code,))
     row = cursor.fetchone()
 
     if not row:
@@ -130,7 +121,6 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
     except:
         return False, "❌ خطأ في صلاحية الكود"
 
-    # تفعيل الاشتراك لمدة 7 أيام بعد الاستخدام
     expire_date = datetime.now() + timedelta(days=7)
 
     cursor.execute("""
@@ -146,18 +136,12 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
 def predict_hand(rank: str, suit: str, previous_hand: str | None) -> str:
     scores = {}
 
-    cursor.execute("""
-    SELECT current_hand FROM games
-    WHERE rank=? AND suit=?
-    """, (rank, suit))
+    cursor.execute("SELECT current_hand FROM games WHERE rank=? AND suit=?", (rank, suit))
     for row in cursor.fetchall():
         scores[row[0]] = scores.get(row[0], 0) + 1
 
     if previous_hand:
-        cursor.execute("""
-        SELECT current_hand FROM games
-        WHERE previous_hand=?
-        """, (previous_hand,))
+        cursor.execute("SELECT current_hand FROM games WHERE previous_hand=?", (previous_hand,))
         for row in cursor.fetchall():
             scores[row[0]] = scores.get(row[0], 0) + 2
 
@@ -191,13 +175,7 @@ def suits_keyboard() -> InlineKeyboardMarkup:
 
 def hands_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(row_width=2)
-    hands = [
-        "👥 زوجين",
-        "🔗 متتالية",
-        "🎴 ثلاثة",
-        "🏠 فل هاوس",
-        "🂡 أربعة"
-    ]
+    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
     buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
     kb.add(*buttons)
     return kb
@@ -242,7 +220,6 @@ async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
     user_temp[user_id] = {}
     user_temp[user_id]["rank"] = callback.data.split("_")[1]
-
     await callback.message.answer("اختر نوع الورقة:", reply_markup=suits_keyboard())
     await callback.answer()
 
@@ -272,7 +249,6 @@ async def choose_suit(callback: CallbackQuery):
             last_hand
         )
         user_temp[user_id]["prediction"] = prediction
-
         await callback.message.answer(f"🤖 تخميني:\n\n{prediction}")
         await callback.message.answer("شنو كانت ضربتك الحقيقية؟", reply_markup=hands_keyboard())
 
@@ -283,7 +259,7 @@ async def choose_hand(callback: CallbackQuery):
     user_id = callback.from_user.id
     current_hand = callback.data.replace("hand_", "")
 
-    if user_id not in user_temp or "rank" not in user_temp[user_id] or "suit" not in user_temp[user_id]:
+    if user_id not in user_temp or "rank" not in user_temp.get(user_id, {}) or "suit" not in user_temp.get(user_id, {}):
         await callback.message.answer("خطأ في التسلسل، جرب من جديد")
         await callback.answer()
         return
@@ -320,46 +296,48 @@ async def choose_hand(callback: CallbackQuery):
     await callback.answer()
 
 # ================== ADMIN COMMANDS ==================
-# ================== ADMIN COMMANDS ==================
 
-ADMIN_ID = 7717061636   # ← تأكد إنه رقمك الصحيح
-
-@dp.message(Command("genweek"))
-async def admin_genweek(message: Message):
-    await admin_generate_codes_handler(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
+ADMIN_ID = 7717061636  # تأكد من الرقم
 
 @dp.message(Command("genshort"))
-async def admin_genshort(message: Message):
-    await admin_generate_codes_handler(message, duration_days=0, title="كودات ساعة واحدة")
+async def cmd_genshort(message: Message):
+    await handle_admin_codes(message, 0, "كودات ساعة واحدة")
 
-async def admin_generate_codes_handler(message: Message, duration_days: int, title: str):
+@dp.message(Command("genweek"))
+async def cmd_genweek(message: Message):
+    await handle_admin_codes(message, 7, "كودات أسبوعية (7 أيام)")
+
+async def handle_admin_codes(message: Message, duration_days: int, title: str):
     if message.from_user.id != ADMIN_ID:
         await message.answer("غير مصرح لك بهذا الأمر!")
         return
 
-    # قراءة العدد من الرسالة (الـ argument الثاني)
-    parts = message.text.split()
-    try:
-        count = int(parts[1]) if len(parts) > 1 else 1
-    except (IndexError, ValueError):
-        count = 1
+    parts = message.text.strip().split()
+    count = 1
+    if len(parts) > 1:
+        try:
+            count = int(parts[1])
+        except ValueError:
+            pass
 
-    count = min(count, 20)  # حد أقصى 20
+    count = min(count, 20)
 
     codes_list = []
     for _ in range(count):
         code, expires = create_subscription_code(duration_days)
-        expires_date = expires.split('.')[0]  # بدون الجزء الثانوي
-        codes_list.append(f"`{code}`  → تنتهي: {expires_date}")
+        expires_clean = expires.split('.')[0]
+        codes_list.append(f"`{code}` → تنتهي: {expires_clean}")
 
     text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
-
+    
     await message.answer(text, parse_mode="MarkdownV2")
 
 # ================== RUN ==================
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    await bot.delete_webhook(drop_pending_updates=True)  # مهم جداً لمنع الـ conflict
+    logging.info("Webhook deleted, starting polling")
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
