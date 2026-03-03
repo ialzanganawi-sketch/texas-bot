@@ -320,36 +320,40 @@ async def choose_hand(callback: CallbackQuery):
     await callback.answer()
 
 # ================== ADMIN COMMANDS ==================
+# ================== ADMIN COMMANDS ==================
 
-ADMIN_ID = 7717061636   # ← غيّر هذا الرقم إلى user_id الخاص بك
+ADMIN_ID = 7717061636   # ← تأكد إنه رقمك الصحيح
 
-@dp.message(Command("genweek", "genshort"))
-async def admin_generate_codes(message: Message):
+@dp.message(Command("genweek"))
+async def admin_genweek(message: Message):
+    await admin_generate_codes_handler(message, duration_days=7, title="كودات أسبوعية (7 أيام)")
+
+@dp.message(Command("genshort"))
+async def admin_genshort(message: Message):
+    await admin_generate_codes_handler(message, duration_days=0, title="كودات ساعة واحدة")
+
+async def admin_generate_codes_handler(message: Message, duration_days: int, title: str):
     if message.from_user.id != ADMIN_ID:
         await message.answer("غير مصرح لك بهذا الأمر!")
         return
 
-    command = message.text.split()[0].lstrip('/')
+    # قراءة العدد من الرسالة (الـ argument الثاني)
+    parts = message.text.split()
     try:
-        count = int(message.text.split()[1])
-    except:
+        count = int(parts[1]) if len(parts) > 1 else 1
+    except (IndexError, ValueError):
         count = 1
 
-    count = min(count, 20)
-
-    if command == "genweek":
-        duration = 7
-        title = "كودات أسبوعية (7 أيام صلاحية قبل الاستخدام)"
-    else:
-        duration = 0
-        title = "كودات تجربة (ساعة واحدة صلاحية قبل الاستخدام)"
+    count = min(count, 20)  # حد أقصى 20
 
     codes_list = []
     for _ in range(count):
-        code, expires = create_subscription_code(duration)
-        codes_list.append(f"`{code}`  → تنتهي: {expires.split('.')[0]}")
+        code, expires = create_subscription_code(duration_days)
+        expires_date = expires.split('.')[0]  # بدون الجزء الثانوي
+        codes_list.append(f"`{code}`  → تنتهي: {expires_date}")
 
     text = f"**{title}** ({count} كود):\n\n" + "\n".join(codes_list)
+
     await message.answer(text, parse_mode="MarkdownV2")
 
 # ================== RUN ==================
