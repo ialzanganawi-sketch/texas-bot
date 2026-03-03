@@ -4,7 +4,7 @@ import random
 import string
 import json
 from datetime import datetime, timedelta
-from collections import defaultdict
+from collections import deque
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Command
@@ -13,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 # ================= CONFIG =================
 
 API_TOKEN = "8664632562:AAHD6xaPk01W7cfX1zADS8hRwh-mfVW7s4k"
-ADMIN_ID = 7717061636  # ضع ايديك هنا
+ADMIN_ID = 7717061636
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -23,7 +23,7 @@ CODES_FILE = "codes.json"
 USERS_FILE = "users.json"
 
 user_temp = {}
-AI_MEMORY = []
+AI_MEMORY = deque(maxlen=20000)   # أفضل أداء + حد أقصى
 
 # ================= STORAGE =================
 
@@ -45,13 +45,17 @@ def load_training():
     global AI_MEMORY
     try:
         with open(DATA_FILE, "r") as f:
-            AI_MEMORY = json.load(f)
+            loaded = json.load(f)
+            # نحافظ على أحدث 20 ألف جولة فقط
+            if isinstance(loaded, list):
+                loaded = loaded[:20000]
+            AI_MEMORY = deque(loaded, maxlen=20000)
     except:
-        AI_MEMORY = []
+        AI_MEMORY = deque(maxlen=20000)
 
 def save_training():
     with open(DATA_FILE, "w") as f:
-        json.dump(AI_MEMORY, f)
+        json.dump(list(AI_MEMORY), f)   # نحول deque إلى list قبل الحفظ
 
 # حفظ تلقائي كل 5 دقائق
 async def auto_save():
@@ -65,7 +69,7 @@ def ai_ready():
     return len(AI_MEMORY) >= 20
 
 def train_ai(rank, suit, prev, curr):
-    AI_MEMORY.insert(0, {
+    AI_MEMORY.appendleft({
         "rank": rank,
         "suit": suit,
         "prev": prev,
@@ -74,7 +78,6 @@ def train_ai(rank, suit, prev, curr):
     })
 
 def predict_hand(rank, suit, last_hand=None):
-
     if not ai_ready():
         return "🧠 الذكاء يحتاج 20 جولة تدريب من الادمن."
 
@@ -83,8 +86,8 @@ def predict_hand(rank, suit, last_hand=None):
 
     now = datetime.now()
 
-    for item in AI_MEMORY[:300]:
-
+    # أحدث 300 جولة فقط (أسرع بكثير)
+    for item in list(AI_MEMORY)[:300]:
         created = datetime.fromisoformat(item["time"])
         days_old = (now - created).days
 
@@ -104,7 +107,6 @@ def predict_hand(rank, suit, last_hand=None):
         scores[item["curr"]] += 1
 
     total = sum(scores.values())
-
     percentages = {
         h: round((scores[h] / total) * 100, 1)
         for h in hands
@@ -152,7 +154,7 @@ def activate_code(user_id, code):
 
 def ranks_kb():
     ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
-    rows = [ranks[i:i+4] for i in range(0,len(ranks),4)]
+    rows = [ranks[i:i+4] for i in range(0, len(ranks), 4)]
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=r, callback_data=f"rank_{r}") for r in row]
@@ -179,13 +181,10 @@ def hands_kb(optional=False):
 async def add_code(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-
     days = int(message.text.split()[1]) if len(message.text.split()) > 1 else 7
     code = generate_code()
-
     codes[code] = {"used": False, "days": days}
     save_json(CODES_FILE, codes)
-
     await message.answer(f"كود جديد:\n`{code}`\nالمدة: {days} يوم", parse_mode="Markdown")
 
 @dp.message(Command("train"))
@@ -207,7 +206,6 @@ async def handle_text(message: Message):
         ok, msg = activate_code(message.from_user.id, message.text.strip())
         await message.answer(msg)
         return
-
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_kb())
 
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
@@ -226,35 +224,35 @@ async def choose_hand(callback: CallbackQuery):
     user_id = callback.from_user.id
     data = user_temp.get(user_id)
     if not data:
+        await callback.answer("الجلسة انتهت، ابدأ من جديد")
         return
 
-    prev = callback.data.replace("hand_", "")
-    if prev == "none":
-        prev = None
+    chosen = callback.data.replace("hand_", "")
+    if chosen == "none":
+        chosen = None
 
-    rank = data["rank"]
-    suit = data["suit"]
+    rank = data.get("rank")
+    suit = data.get("suit")
+    if not rank or not suit:
+        return
+
+    # =============== تدريب الادمن ===============
+    if user_id == ADMIN_ID and data.get("mode") == "train_result":
+        train_ai(rank, suit, data.get("prev"), chosen)
+        await callback.message.edit_text("✅ تم حفظ التدريب\nالذكاء يزيد يومياً 🔥")
+        user_temp.pop(user_id, None)
+        return
 
     if user_id == ADMIN_ID and data.get("mode") == "train":
-        user_temp[user_id]["prev"] = prev
-        user_temp[user_id]["mode"] = "train_result"
+        data["prev"] = chosen
+        data["mode"] = "train_result"
         await callback.message.edit_text("شنو كانت النتيجة الفعلية؟", reply_markup=hands_kb())
         return
 
-    result = predict_hand(rank, suit, prev)
+    # =============== استخدام عادي ===============
+    result = predict_hand(rank, suit, chosen)
     await callback.message.edit_text(result)
     user_temp.pop(user_id, None)
-
-@dp.callback_query(lambda c: True)
-async def train_result(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    data = user_temp.get(user_id)
-
-    if user_id == ADMIN_ID and data and data.get("mode") == "train_result":
-        curr = callback.data.replace("hand_", "")
-        train_ai(data["rank"], data["suit"], data["prev"], curr)
-        await callback.message.edit_text("✅ تم حفظ التدريب\nالذكاء يزيد يومياً 🔥")
-        user_temp.pop(user_id, None)
 
 # ================= RUN =================
 
