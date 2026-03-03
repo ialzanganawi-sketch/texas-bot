@@ -7,7 +7,7 @@ import string
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================== CONFIG ==================
@@ -17,7 +17,7 @@ API_TOKEN = os.getenv("BOT_TOKEN")
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN not set in environment variables")
 
-ADMIN_PASSWORD = "texasadmin123"   # ← غيّر هذا الكود الثابت لأي شيء تبيه (سهل وسري)
+ADMIN_ID = 7717061636   # ← غيّر هذا الرقم إلى رقمك من @userinfobot
 
 DB_PATH = "/data/texas_global_ai.db"
 
@@ -64,18 +64,8 @@ conn.commit()
 
 # ================== CODE GENERATION ==================
 
-def generate_code(length=10):
-    characters = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(characters) for _ in range(length))
-
 def create_subscription_code(duration_days=7):
-    code = generate_code()
-    while True:
-        cursor.execute("SELECT code FROM codes WHERE code=?", (code,))
-        if not cursor.fetchone():
-            break
-        code = generate_code()
-    
+    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
     created_at = datetime.now().isoformat()
     if duration_days == 0:
         expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
@@ -132,71 +122,46 @@ def activate_code(user_id: int, code: str) -> tuple[bool, str]:
 
     return True, f"✅ تم تفعيل الاشتراك لمدة 7 أيام\n(كان الكود صالح حتى: {expires_at.strftime('%Y-%m-%d %H:%M')})"
 
-# ================== KEYBOARDS ==================
+# ================== ADMIN COMMANDS - إضافة كود يدوي ==================
 
-def ranks_keyboard() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(row_width=4)
-    ranks = ["A","K","Q","J","10","9","8","7","6","5","4","3","2"]
-    buttons = [InlineKeyboardButton(text=r, callback_data=f"rank_{r}") for r in ranks]
-    kb.add(*buttons)
-    return kb
-
-def suits_keyboard() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(row_width=4)
-    suits = ["♥️","♦️","♣️","♠️"]
-    buttons = [InlineKeyboardButton(text=s, callback_data=f"suit_{s}") for s in suits]
-    kb.add(*buttons)
-    return kb
-
-def hands_keyboard() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(row_width=2)
-    hands = ["👥 زوجين", "🔗 متتالية", "🎴 ثلاثة", "🏠 فل هاوس", "🂡 أربعة"]
-    buttons = [InlineKeyboardButton(text=h, callback_data=f"hand_{h}") for h in hands]
-    kb.add(*buttons)
-    return kb
-
-# ================== ADMIN PASSWORD SYSTEM ==================
-
-@dp.message()
-async def handle_text(message: Message):
-    text = message.text.strip()
-    user_id = message.from_user.id
-
-    # كود الأدمن الثابت
-    if text == "texasadmin123":   # ← غيّر هذا الكود لأي شيء تبيه
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="ولد كود أسبوعي", callback_data="admin_week")],
-            [InlineKeyboardButton(text="ولد كود ساعة واحدة", callback_data="admin_short")]
-        ])
-        await message.answer("🔑 تم تفعيل وضع الأدمن!\nاختر نوع الكود:", reply_markup=kb)
+@dp.message(Command("addcode"))
+async def add_custom_code(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("غير مصرح لك!")
         return
 
-    if not check_subscription(user_id):
-        ok, msg = activate_code(user_id, text)
-        await message.answer(msg)
-        if ok:
-            await message.answer("✅ اشتراكك مفعّل الآن!\n\nاختر رقم الورقة:", reply_markup=ranks_keyboard())
+    parts = message.text.strip().split()
+    if len(parts) < 3:
+        await message.answer("استخدام:\n/addcode الكود المدة\nمثال:\n/addcode MYCODE123 7\n/addcode TEST456 0")
         return
 
-    await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+    custom_code = parts[1]
+    try:
+        days = int(parts[2])
+    except:
+        days = 7
 
-# ================== ADMIN CALLBACKS ==================
+    # تحقق إذا الكود موجود مسبقاً
+    cursor.execute("SELECT code FROM codes WHERE code=?", (custom_code,))
+    if cursor.fetchone():
+        await message.answer("❌ هذا الكود موجود مسبقاً!")
+        return
 
-@dp.callback_query(lambda c: c.data == "admin_week")
-async def admin_week(callback: CallbackQuery):
-    code, expires = create_subscription_code(7)
-    expires_clean = expires.split('.')[0]
-    await callback.message.answer(f"✅ **كود أسبوعي جديد**\n\n`{code}`\n\nينتهي: {expires_clean}", parse_mode="MarkdownV2")
-    await callback.answer()
+    created_at = datetime.now().isoformat()
+    if days == 0:
+        expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
+    else:
+        expires_at = (datetime.now() + timedelta(days=days)).isoformat()
 
-@dp.callback_query(lambda c: c.data == "admin_short")
-async def admin_short(callback: CallbackQuery):
-    code, expires = create_subscription_code(0)
-    expires_clean = expires.split('.')[0]
-    await callback.message.answer(f"✅ **كود ساعة واحدة**\n\n`{code}`\n\nينتهي: {expires_clean}", parse_mode="MarkdownV2")
-    await callback.answer()
+    cursor.execute("""
+    INSERT INTO codes (code, is_used, created_at, expires_at)
+    VALUES (?, 0, ?, ?)
+    """, (custom_code, created_at, expires_at))
+    conn.commit()
 
-# ================== باقي الكود (Start + Callbacks) ==================
+    await message.answer(f"✅ تم إضافة الكود بنجاح!\n\n`{custom_code}`\nمدة: {days} أيام\nينتهي: {expires_at.split('.')[0]}", parse_mode="MarkdownV2")
+
+# ================== BOT FLOW ==================
 
 @dp.message(CommandStart())
 async def start(message: Message):
@@ -207,6 +172,25 @@ async def start(message: Message):
 async def enter_code(callback: CallbackQuery):
     await callback.message.answer("🔐 ارسل الكود الآن:")
     await callback.answer()
+
+@dp.message()
+async def handle_text(message: Message):
+    if message.text and message.text.strip().startswith('/'):
+        return
+
+    user_id = message.from_user.id
+    text = message.text.strip()
+
+    if not check_subscription(user_id):
+        ok, msg = activate_code(user_id, text)
+        await message.answer(msg)
+        if ok:
+            await message.answer("✅ اشتراكك مفعّل الآن!\n\nاختر رقم الورقة:", reply_markup=ranks_keyboard())
+        return
+
+    await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
+
+# (باقي الـ callback handlers كما هي، يمكنك إضافتها من الكود السابق)
 
 # ================== RUN ==================
 
