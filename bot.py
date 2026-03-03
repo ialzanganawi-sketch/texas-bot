@@ -119,12 +119,17 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     text = update.message.text.strip()
 
     if text in RESPONSES:
+        # ★★★ أضف هالسطرين هنا ★★★
+        user_id = update.effective_user.id
+        context.application.bot_data.setdefault("user_choices", {})[user_id] = text
+
         await update.message.reply_text(
             RESPONSES[text],
             parse_mode="Markdown",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
+        # ... نفس الشيء
         await update.message.reply_text(
             "اختيار غير صحيح، جرب من الأزرار.",
             reply_markup=ReplyKeyboardMarkup(OPTIONS, resize_keyboard=True, one_time_keyboard=True)
