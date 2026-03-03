@@ -180,9 +180,9 @@ def hands_keyboard() -> InlineKeyboardMarkup:
 
 user_temp: dict[int, dict] = {}
 
-# ================== ADMIN COMMANDS ==================
+# ================== ADMIN COMMANDS (مهم: قبل الهاندلر العام) ==================
 
-ADMIN_ID = 7717061636
+ADMIN_ID = 7717061636   # رقمك من @userinfobot
 
 @dp.message(Command("genshort"))
 async def cmd_genshort(message: Message):
@@ -204,6 +204,7 @@ async def handle_admin_gen(message: Message, duration_days: int, title: str):
             count = int(parts[1])
         except ValueError:
             count = 1
+
     count = min(count, 20)
 
     codes_list = []
@@ -229,6 +230,10 @@ async def enter_code(callback: CallbackQuery):
 
 @dp.message()
 async def handle_text(message: Message):
+    # تجاهل أي رسالة تبدأ بـ / (عشان الأوامر الإدارية ما تدخل هنا)
+    if message.text and message.text.strip().startswith('/'):
+        return
+
     user_id = message.from_user.id
     text = message.text.strip()
 
@@ -241,21 +246,18 @@ async def handle_text(message: Message):
 
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# ================== CALLBACKS ==================
+# ================== CALLBACK HANDLERS ==================
 
 @dp.callback_query(lambda c: c.data.startswith("rank_"))
 async def choose_rank(callback: CallbackQuery):
     user_id = callback.from_user.id
-    user_temp[user_id] = {}
-    user_temp[user_id]["rank"] = callback.data.split("_")[1]
+    user_temp[user_id] = {"rank": callback.data.split("_")[1]}
     await callback.message.answer("اختر نوع الورقة:", reply_markup=suits_keyboard())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("suit_"))
 async def choose_suit(callback: CallbackQuery):
     user_id = callback.from_user.id
-    if user_id not in user_temp:
-        user_temp[user_id] = {}
     user_temp[user_id]["suit"] = callback.data.split("_")[1]
 
     cursor.execute("SELECT trained_rounds, last_hand FROM users WHERE user_id=?", (user_id,))
@@ -271,7 +273,6 @@ async def choose_suit(callback: CallbackQuery):
         await callback.message.answer(f"⚠️ جولة تدريب رقم {trained+1} من 3\n\nشنو كانت ضربتك؟", reply_markup=hands_keyboard())
     else:
         prediction = predict_hand(user_temp[user_id]["rank"], user_temp[user_id]["suit"], last_hand)
-        user_temp[user_id]["prediction"] = prediction
         await callback.message.answer(f"🤖 تخميني:\n\n{prediction}")
         await callback.message.answer("شنو كانت ضربتك الحقيقية؟", reply_markup=hands_keyboard())
 
