@@ -30,18 +30,20 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise ValueError("TOKEN غير موجود في Environment Variables")
 
-ACTIVATION_CODE = "SECRET123"           # ← غيّره لشيء قوي
+ACTIVATION_CODE = "SECRET123"  # ← غيّره إلى كود قوي
 
 SA_TZ = ZoneInfo("Asia/Riyadh")
 
 # حالات المحادثة
 CHOOSING, PREDICT_HAND, PREDICT_SUIT, PREDICT_RANK, ASK_ACTUAL_HIT = range(5)
 
-HAND_OPTIONS = [
+# الخانة القوية منفصلة في الأعلى
+STRONG_HAND = "أربعة أو أقوى"
+
+HAND_OPTIONS_NORMAL = [
     ["زوج", "زوجين", "دبل AA"],
-    ["ثلاثة", "أربعة"],
-    ["فل هاوس", "متتالية"],
-    ["متتالية نوع واحد", "رويال"],
+    ["ثلاثة", "ثلاثية"],
+    ["فل هاوس", "متتالية", "متتالية نوع واحد"],
     ["↩️ إلغاء"]
 ]
 
@@ -65,75 +67,41 @@ def activate_user(context, user_id: int, choice: str):
     activated = context.application.bot_data.setdefault("activated", {})
     activated[user_id] = choice
 
-# ────────────────────────────────────────────────
-# التنبؤ بالأسماء (بدون أرقام x)
-# ────────────────────────────────────────────────
-
 def generate_name_predictions(last_hand: str) -> list:
-    """
-    توليد 3-4 توقعات بالأسماء بناءً على آخر ضربة
-    """
     last_lower = last_hand.lower()
 
-    if any(w in last_lower for w in ["أربع", "رويال", "فل هاوس"]):
-        return ["زوج", "زوجين", "ثلاثة", "متتالية"]
+    # بعد "أربعة أو أقوى" → توقع محافظ + تحذير
+    if "أربع" in last_lower or "أقوى" in last_lower:
+        return [
+            "زوج",
+            "زوجين",
+            "ثلاثة",
+            "احتمال crash عالي بعد هالضربة"
+        ]
 
-    if "ثلاثة" in last_lower or "ثلاث" in last_lower:
-        return ["زوجين", "فل هاوس", "أربعة", "متتالية نوع واحد"]
+    # حالات عادية
+    if "فل هاوس" in last_lower:
+        return ["أربعة أو أقوى", "ثلاثية", "زوجين", "متتالية نوع واحد"]
+
+    if "ثلاث" in last_lower:
+        return ["زوجين", "فل هاوس", "أربعة أو أقوى", "متتالية"]
 
     if "زوج" in last_lower or "دبل" in last_lower:
-        return ["ثلاثة", "زوجين", "فل هاوس", "أربعة"]
+        return ["ثلاثة", "زوجين", "فل هاوس", "أربعة أو أقوى"]
 
     if "متتالية" in last_lower:
-        return ["متتالية نوع واحد", "فل هاوس", "ثلاثة", "زوجين"]
+        return ["متتالية نوع واحد", "فل هاوس", "ثلاثية", "أربعة أو أقوى"]
 
     # افتراضي
-    return ["زوجين", "ثلاثة", "فل هاوس", "أربعة"]
-
-
-async def do_final_prediction(update_or_query, context):
-    last_hand = context.user_data.get("last_hand", "غير معروف")
-    last_suit = context.user_data.get("last_suit", "?")
-    last_rank = context.user_data.get("last_rank", "?")
-
-    predictions = generate_name_predictions(last_hand)
-
-    # خلط بسيط + أخذ أول 4
-    random.shuffle(predictions)
-    top_preds = predictions[:4]
-
-    lines = ["التوقعات للضربة القادمة:\n"]
-    for i, pred in enumerate(top_preds, 1):
-        if i == 1:
-            lines.append(f"الأكثر احتمالاً: {pred}")
-        elif i == 2:
-            lines.append(f"احتمال جيد: {pred}")
-        else:
-            lines.append(f"احتمال متوسط: {pred}")
-
-    lines.append(f"\nبناءً على:")
-    lines.append(f"• آخر ضربة: {last_hand}")
-    if last_rank != "?" and last_suit != "?":
-        lines.append(f"• آخر ورقة: {last_rank} {last_suit}")
-
-    final_text = "\n".join(lines)
-
-    if hasattr(update_or_query, "edit_message_text"):
-        await update_or_query.edit_message_text(final_text)
-    else:
-        await update_or_query.message.reply_text(final_text)
-
-    # حفظ للإحصائيات المستقبلية (اختياري)
-    context.user_data["pending_hand"] = last_hand
-
+    return ["زوجين", "ثلاثة", "فل هاوس", "أربعة أو أقوى"]
 
 # ────────────────────────────────────────────────
-# التحديث الدوري (كل 10 دقائق)
+# التحديث الدوري
 # ────────────────────────────────────────────────
 
 async def send_update(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(SA_TZ).strftime("%H:%M")
-    msg = f"تحديث جديد – {now}\nأوقات مقترحة (مثال):\n" + "\n".join([f"• {i:02d}:{(j*3)%60:02d}" for i,j in enumerate(range(5),1)])
+    msg = f"تحديث {now} – أوقات مقترحة (مثال):\n" + "\n".join([f"• {i:02d}:{(j*4)%60:02d}" for i,j in enumerate(range(5),1)])
 
     activated = context.application.bot_data.get("activated", {})
     for uid, ch in activated.items():
@@ -142,7 +110,6 @@ async def send_update(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(uid, msg)
             except Exception:
                 pass
-
 
 # ────────────────────────────────────────────────
 # Handlers
@@ -167,7 +134,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     valid = ["ربح متزايد", "بس أربعة", "بس دبل AA", "دبل AA وأربعة"]
 
     if text not in valid:
-        await update.message.reply_text("اختار من الأزرار أعلاه")
+        await update.message.reply_text("اختار من الأزرار")
         return CHOOSING
 
     context.user_data["choice"] = text
@@ -176,7 +143,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if text == "ربح متزايد":
         msg += f"للتفعيل أرسل:\n`/activate {ACTIVATION_CODE}`"
     else:
-        msg += "تواصل معي للدفع: @YourUsernameHere"
+        msg += "تواصل معي للدفع: @YourUsername"
 
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -184,28 +151,25 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args or context.args[0] != ACTIVATION_CODE:
-        await update.message.reply_text(f"الكود خاطئ\nاستخدم: /activate {ACTIVATION_CODE}")
+        await update.message.reply_text(f"كود خاطئ → /activate {ACTIVATION_CODE}")
         return
 
     uid = update.effective_user.id
     choice = context.user_data.get("choice")
 
     if not choice:
-        await update.message.reply_text("اختار نوع الخدمة أولاً من /start")
+        await update.message.reply_text("اختار من /start أولاً")
         return
 
     if is_activated(context, uid):
-        await update.message.reply_text("حسابك مفعّل مسبقاً")
+        await update.message.reply_text("مفعّل مسبقاً")
         return
 
     activate_user(context, uid, choice)
 
     await update.message.reply_text(
-        f"تم التفعيل بنجاح! ✅\n"
-        f"نوع الاشتراك: {choice}\n\n"
-        "الآن يمكنك استخدام:\n"
-        "• /predict    ← لخمن الضربة القادمة\n"
-        "• أرسل x2.7   ← لحفظ النتيجة الفعلية (اختياري)"
+        f"تم التفعيل ✅\nنوع: {choice}\n\n"
+        "/predict ← للتنبؤ\nx2.7 ← لحفظ نتيجة (اختياري)"
     )
 
 
@@ -215,7 +179,12 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     keyboard = []
-    for row in HAND_OPTIONS:
+
+    # الخانة القوية منفصلة في الأعلى
+    keyboard.append([InlineKeyboardButton(STRONG_HAND, callback_data=f"hand_{STRONG_HAND}")])
+
+    # باقي الخانات العادية
+    for row in HAND_OPTIONS_NORMAL:
         keyboard.append([InlineKeyboardButton(txt, callback_data=f"hand_{txt}") for txt in row])
 
     await update.message.reply_text(
@@ -249,7 +218,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         suit = data[5:]
         if suit == "↩️ رجوع":
             keyboard = []
-            for row in HAND_OPTIONS:
+            # الخانة القوية منفصلة عند الرجوع أيضاً
+            keyboard.append([InlineKeyboardButton(STRONG_HAND, callback_data=f"hand_{STRONG_HAND}")])
+            for row in HAND_OPTIONS_NORMAL:
                 keyboard.append([InlineKeyboardButton(txt, callback_data=f"hand_{txt}") for txt in row])
             await query.edit_message_text("اختر آخر ضربة:", reply_markup=InlineKeyboardMarkup(keyboard))
             return PREDICT_HAND
@@ -298,7 +269,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         await query.edit_message_text(
             "أرسل اسم الضربة اللي ضربت فعلياً\n"
-            "(مثال: زوجين، ثلاثة، فل هاوس، أربعة...)\n\n"
+            "(مثال: زوجين، ثلاثية، فل هاوس، أربعة أو أقوى...)\n\n"
             "أو أرسل /skip لو ما تبي تسجل"
         )
         return ASK_ACTUAL_HIT
@@ -317,19 +288,52 @@ async def handle_actual_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 
+async def do_final_prediction(update_or_query, context):
+    last_hand = context.user_data.get("last_hand", "غير معروف")
+    last_suit = context.user_data.get("last_suit", "?")
+    last_rank = context.user_data.get("last_rank", "?")
+
+    predictions = generate_name_predictions(last_hand)
+    random.shuffle(predictions)
+    top_preds = predictions[:4]
+
+    lines = ["التوقعات للضربة القادمة:\n"]
+    for i, pred in enumerate(top_preds, 1):
+        if "crash" in pred.lower():
+            lines.append(f"⚠️ {pred}")
+        elif i == 1:
+            lines.append(f"الأكثر احتمالاً: {pred}")
+        elif i == 2:
+            lines.append(f"احتمال جيد: {pred}")
+        else:
+            lines.append(f"احتمال متوسط: {pred}")
+
+    lines.append(f"\nبناءً على:")
+    lines.append(f"• آخر ضربة: {last_hand}")
+    if last_rank != "?" and last_suit != "?":
+        lines.append(f"• آخر ورقة: {last_rank} {last_suit}")
+
+    final_text = "\n".join(lines)
+
+    if hasattr(update_or_query, "edit_message_text"):
+        await update_or_query.edit_message_text(final_text)
+    else:
+        await update_or_query.message.reply_text(final_text)
+
+    context.user_data["pending_hand"] = last_hand
+
+
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip().lower()
     if not text.startswith("x"):
         return
 
     try:
-        _ = float(text[1:])  # فقط للتحقق
+        _ = float(text[1:])
     except ValueError:
         await update.message.reply_text("الصيغة خاطئة → مثال: x2.8")
         return
 
-    # هنا يمكنك حفظ الرقم إذا أردت إحصائيات مستقبلية
-    # لكن حالياً لا نستخدمه في التوقع بالأسماء
     await update.message.reply_text("تم حفظ النتيجة ✓ شكراً")
 
 
