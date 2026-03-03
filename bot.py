@@ -7,7 +7,7 @@ import string
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================== CONFIG ==================
@@ -16,6 +16,8 @@ API_TOKEN = os.getenv("BOT_TOKEN")
 
 if not API_TOKEN:
     raise ValueError("BOT_TOKEN not set in environment variables")
+
+ADMIN_PASSWORD = "texasadmin123"   # ← غيّر هذا الكود الثابت لأي شيء تبيه (سهل وسري)
 
 DB_PATH = "/data/texas_global_ai.db"
 
@@ -153,43 +155,21 @@ def hands_keyboard() -> InlineKeyboardMarkup:
     kb.add(*buttons)
     return kb
 
-# ================== ADMIN COMMANDS - طريقة سهلة جداً ==================
-
-ADMIN_ID = 7717061636   # غيّر هذا الرقم إلى رقمك من @userinfobot
-
-@dp.message(Command("code"))
-async def simple_code(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    code, expires = create_subscription_code(7)
-    await message.answer(f"✅ **كود أسبوعي جديد**\n\n`{code}`\n\nينتهي: {expires.split('.')[0]}", parse_mode="MarkdownV2")
-
-@dp.message(Command("short"))
-async def simple_short(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    code, expires = create_subscription_code(0)
-    await message.answer(f"✅ **كود ساعة واحدة**\n\n`{code}`\n\nينتهي: {expires.split('.')[0]}", parse_mode="MarkdownV2")
-
-# ================== BOT FLOW ==================
-
-@dp.message(CommandStart())
-async def start(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔐 إدخال الكود", callback_data="enter_code")]])
-    await message.answer("اهلاً بك في بوت تخمين ضربات تكساس ♠️🔥\n\nادخل الكود حتى تبدأ الاشتراك الأسبوعي.", reply_markup=kb)
-
-@dp.callback_query(lambda c: c.data == "enter_code")
-async def enter_code(callback: CallbackQuery):
-    await callback.message.answer("🔐 ارسل الكود الآن:")
-    await callback.answer()
+# ================== ADMIN PASSWORD SYSTEM ==================
 
 @dp.message()
 async def handle_text(message: Message):
-    if message.text and message.text.strip().startswith('/'):
-        return
-
-    user_id = message.from_user.id
     text = message.text.strip()
+    user_id = message.from_user.id
+
+    # كود الأدمن الثابت
+    if text == "texasadmin123":   # ← غيّر هذا الكود لأي شيء تبيه
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="ولد كود أسبوعي", callback_data="admin_week")],
+            [InlineKeyboardButton(text="ولد كود ساعة واحدة", callback_data="admin_short")]
+        ])
+        await message.answer("🔑 تم تفعيل وضع الأدمن!\nاختر نوع الكود:", reply_markup=kb)
+        return
 
     if not check_subscription(user_id):
         ok, msg = activate_code(user_id, text)
@@ -200,7 +180,33 @@ async def handle_text(message: Message):
 
     await message.answer("اختر رقم الورقة:", reply_markup=ranks_keyboard())
 
-# (باقي الـ callback handlers نفسها كما هي - يمكنك نسخها من الكود السابق)
+# ================== ADMIN CALLBACKS ==================
+
+@dp.callback_query(lambda c: c.data == "admin_week")
+async def admin_week(callback: CallbackQuery):
+    code, expires = create_subscription_code(7)
+    expires_clean = expires.split('.')[0]
+    await callback.message.answer(f"✅ **كود أسبوعي جديد**\n\n`{code}`\n\nينتهي: {expires_clean}", parse_mode="MarkdownV2")
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_short")
+async def admin_short(callback: CallbackQuery):
+    code, expires = create_subscription_code(0)
+    expires_clean = expires.split('.')[0]
+    await callback.message.answer(f"✅ **كود ساعة واحدة**\n\n`{code}`\n\nينتهي: {expires_clean}", parse_mode="MarkdownV2")
+    await callback.answer()
+
+# ================== باقي الكود (Start + Callbacks) ==================
+
+@dp.message(CommandStart())
+async def start(message: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔐 إدخال الكود", callback_data="enter_code")]])
+    await message.answer("اهلاً بك في بوت تخمين ضربات تكساس ♠️🔥\n\nادخل الكود حتى تبدأ الاشتراك الأسبوعي.", reply_markup=kb)
+
+@dp.callback_query(lambda c: c.data == "enter_code")
+async def enter_code(callback: CallbackQuery):
+    await callback.message.answer("🔐 ارسل الكود الآن:")
+    await callback.answer()
 
 # ================== RUN ==================
 
